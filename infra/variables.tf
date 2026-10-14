@@ -46,6 +46,6 @@ variable "tags" {
 
 variable "bedrock_model_id" {
   type        = string
-  description = "Bedrock foundation model ID for civic report analysis. Must be vision-capable Claude. Verify model access is granted in the AWS Bedrock console for your account + region before applying."
-  default     = "anthropic.claude-sonnet-4-6"
+  description = "Bedrock model/profile ID for civic report analysis. Must be vision-capable Claude. Claude 4+ models require a cross-region inference profile (us.* / global.*) rather than the raw foundation-model ID. Verify model access is granted in the AWS Bedrock console for your account + region before applying."
+  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 }
