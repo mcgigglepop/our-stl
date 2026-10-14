@@ -50,6 +50,7 @@ infra/.terraform/
 infra/.terraform.lock.hcl
 infra/terraform.tfstate*
 infra/terraform.tfplan
+infra/lambda-*.zip
 infra/*.tfvars
 infra/!terraform.tfvars.example
 
