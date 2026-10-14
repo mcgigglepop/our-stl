@@ -21,7 +21,6 @@ import {
   routeIssue,
   type CivicIssue,
   type Jurisdiction,
-  type RoutingResult,
 } from '@/services/civicRouting';
 import { colors, heroGradient, radii, spacing, typography } from '@/theme';
 
@@ -41,7 +40,6 @@ const JURISDICTIONS: { value: Jurisdiction; label: string }[] = [
 export default function CivicReportingScreen() {
   const [routingIssue, setRoutingIssue] = useState<CivicIssue>('Pothole');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('city');
-  const [routingResult, setRoutingResult] = useState<RoutingResult | null>(null);
 
   const [reportCategory, setReportCategory] = useState<CivicIssue>('Damaged sidewalk');
   const [reportLocation, setReportLocation] = useState('');
@@ -49,15 +47,10 @@ export default function CivicReportingScreen() {
   const [photo, setPhoto] = useState<ImagePicker.ImagePickerAsset | null>(null);
 
   const issueOptions = useMemo(() => ALL_ISSUES.map((i) => ({ value: i, label: i })), []);
-
-  const handleChipPress = (issue: CivicIssue) => {
-    setRoutingIssue(issue);
-    setRoutingResult(routeIssue(issue, jurisdiction));
-  };
-
-  const handleFindService = () => {
-    setRoutingResult(routeIssue(routingIssue, jurisdiction));
-  };
+  const routingResult = useMemo(
+    () => routeIssue(routingIssue, jurisdiction),
+    [routingIssue, jurisdiction]
+  );
 
   const handleHelpDraft = () => {
     setReportDescription(draftDescription(reportCategory));
@@ -128,7 +121,7 @@ export default function CivicReportingScreen() {
             return (
               <Pressable
                 key={chip.key}
-                onPress={() => handleChipPress(chip.key)}
+                onPress={() => setRoutingIssue(chip.key)}
                 style={({ pressed }) => [
                   styles.chip,
                   isSelected && styles.chipSelected,
@@ -164,19 +157,8 @@ export default function CivicReportingScreen() {
           </View>
         </View>
 
-        <Pressable
-          onPress={handleFindService}
-          style={({ pressed }) => [styles.actionBtn, pressed && styles.pressed]}
-        >
-          <Text style={styles.actionBtnText}>Find responsible service →</Text>
-        </Pressable>
-
         <View style={styles.previewBox}>
-          {routingResult === null ? (
-            <Text style={styles.previewPrompt}>
-              Select an issue to see the suggested service and responsible department.
-            </Text>
-          ) : routingResult.kind === 'city' ? (
+          {routingResult.kind === 'city' ? (
             <>
               <Text style={styles.previewLabel}>Suggested receiving service</Text>
               <Text style={styles.previewValue}>{routingResult.service}</Text>
