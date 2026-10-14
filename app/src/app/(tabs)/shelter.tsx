@@ -15,6 +15,7 @@ import { Hero } from '@/components/Hero';
 import { useCurrentLocation } from '@/hooks/useCurrentLocation';
 import { findHealthCentersNear, type HealthCenter } from '@/services/hrsa';
 import { findHygieneNear, type DayFilter, type HygieneResult } from '@/services/hygiene';
+import { findMealsNear, type MealResult } from '@/services/meals';
 import { findPantriesNear, type PantryResult } from '@/services/pantries';
 import { findSheltersNear, type AudienceFilter, type ShelterResult } from '@/services/shelters';
 import { DAY_LABEL, DAY_ORDER, type DayKey } from '@/services/stlDropIns';
@@ -33,7 +34,7 @@ interface Need {
 }
 
 const NEEDS: Need[] = [
-  { key: 'meal', symbol: '🥘', label: 'Free meals', resourceLabel: 'Prepared meals', active: false },
+  { key: 'meal', symbol: '🥘', label: 'Free meals', resourceLabel: 'Prepared meals', active: true },
   { key: 'pantry', symbol: '🥫', label: 'Food pantry', resourceLabel: 'Food pantry', active: true },
   { key: 'shelter', symbol: '🏠', label: 'Shelter referrals', resourceLabel: 'Shelter / housing intake', active: true },
   { key: 'hygiene', symbol: '🚿', label: 'Showers & hygiene', resourceLabel: 'Showers / clothing / laundry', active: true },
@@ -68,6 +69,7 @@ export default function FoodShelterScreen() {
   const [hygieneResults, setHygieneResults] = useState<HygieneResult[]>([]);
   const [shelterResults, setShelterResults] = useState<ShelterResult[]>([]);
   const [pantryResults, setPantryResults] = useState<PantryResult[]>([]);
+  const [mealResults, setMealResults] = useState<MealResult[]>([]);
   const [dayFilter, setDayFilter] = useState<DayFilter>('any');
   const [audienceFilter, setAudienceFilter] = useState<AudienceFilter>('all');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -87,7 +89,9 @@ export default function FoodShelterScreen() {
             ? shelterResults.length
             : selected === 'pantry'
               ? pantryResults.length
-              : 0;
+              : selected === 'meal'
+                ? mealResults.length
+                : 0;
 
   const loadData = useCallback(
     async (need: NeedKey, day: DayFilter, audience: AudienceFilter) => {
@@ -134,6 +138,12 @@ export default function FoodShelterScreen() {
             setPantryResults(results);
             setVisibleCount(PAGE_SIZE);
           }
+        } else if (need === 'meal') {
+          const results = findMealsNear(location.coords, { day });
+          if (!controller.signal.aborted) {
+            setMealResults(results);
+            setVisibleCount(PAGE_SIZE);
+          }
         }
       } catch (err) {
         if (!controller.signal.aborted) {
@@ -152,7 +162,8 @@ export default function FoodShelterScreen() {
         selected === 'water' ||
         selected === 'hygiene' ||
         selected === 'shelter' ||
-        selected === 'pantry') &&
+        selected === 'pantry' ||
+        selected === 'meal') &&
       location.coords
     ) {
       loadData(selected, dayFilter, audienceFilter);
@@ -224,15 +235,17 @@ export default function FoodShelterScreen() {
         {selected === 'shelter' && (
           <AudiencePicker value={audienceFilter} onChange={setAudienceFilter} />
         )}
-        {(selected === 'hygiene' || selected === 'shelter' || selected === 'pantry') && (
-          <DayPicker value={dayFilter} onChange={setDayFilter} />
-        )}
+        {(selected === 'hygiene' ||
+          selected === 'shelter' ||
+          selected === 'pantry' ||
+          selected === 'meal') && <DayPicker value={dayFilter} onChange={setDayFilter} />}
 
         {(selected === 'health' ||
           selected === 'water' ||
           selected === 'hygiene' ||
           selected === 'shelter' ||
-          selected === 'pantry') && (
+          selected === 'pantry' ||
+          selected === 'meal') && (
           <ResultsSection
             kind={selected}
             loading={loading}
@@ -242,6 +255,7 @@ export default function FoodShelterScreen() {
             hygieneResults={hygieneResults}
             shelterResults={shelterResults}
             pantryResults={pantryResults}
+            mealResults={mealResults}
             dayFilter={dayFilter}
             audienceFilter={audienceFilter}
             visibleCount={visibleCount}
@@ -268,7 +282,7 @@ export default function FoodShelterScreen() {
 }
 
 interface ResultsSectionProps {
-  kind: 'health' | 'water' | 'hygiene' | 'shelter' | 'pantry';
+  kind: 'health' | 'water' | 'hygiene' | 'shelter' | 'pantry' | 'meal';
   loading: boolean;
   error: string | null;
   centers: HealthCenter[];
@@ -276,6 +290,7 @@ interface ResultsSectionProps {
   hygieneResults: HygieneResult[];
   shelterResults: ShelterResult[];
   pantryResults: PantryResult[];
+  mealResults: MealResult[];
   dayFilter: DayFilter;
   audienceFilter: AudienceFilter;
   visibleCount: number;
@@ -356,6 +371,7 @@ function ResultsSection({
   hygieneResults,
   shelterResults,
   pantryResults,
+  mealResults,
   dayFilter,
   audienceFilter,
   visibleCount,
@@ -414,6 +430,15 @@ function ResultsSection({
         </View>
       )}
 
+      {kind === 'meal' && (
+        <View style={styles.infoBanner}>
+          <Text style={styles.infoText}>
+            Free meal programs from the City of St. Louis directory. No ZIP restrictions and no sign-up —
+            arrive during the posted window. Some locations run only part of the month; read the hours.
+          </Text>
+        </View>
+      )}
+
       {kind === 'shelter' && <Shelter211Card />}
 
       {kind === 'shelter' && (
@@ -454,7 +479,9 @@ function ResultsSection({
                   ? 'No drop-in centers match the selected day.'
                   : kind === 'pantry'
                     ? 'No pantries open on the selected day — try Any day or call 211.'
-                    : 'No shelters match the current filters — call 211.'}
+                    : kind === 'meal'
+                      ? 'No meal programs open on the selected day — try Any day.'
+                      : 'No shelters match the current filters — call 211.'}
           </Text>
         </View>
       )}
@@ -490,6 +517,18 @@ function ResultsSection({
           </Text>
           {hygieneResults.slice(0, visibleCount).map((r) => (
             <HygieneCard key={r.center.id} result={r} />
+          ))}
+        </>
+      )}
+
+      {!loading && !error && totalCount > 0 && kind === 'meal' && (
+        <>
+          <Text style={styles.resultsHeader}>
+            {mealResults.length} meal program{mealResults.length === 1 ? '' : 's'}
+            {dayFilter === 'any' ? ' nearby' : ` serving ${DAY_LABEL[dayFilter]} or hours unposted`}.
+          </Text>
+          {mealResults.slice(0, visibleCount).map((r) => (
+            <MealCard key={r.meal.id} result={r} />
           ))}
         </>
       )}
@@ -629,6 +668,65 @@ function WaterCard({ source }: { source: WaterSource }) {
             <Text style={styles.serviceLink}>Website ↗</Text>
           </Pressable>
         )}
+      </View>
+    </View>
+  );
+}
+
+const MEAL_TYPE_LABEL: Record<'breakfast' | 'lunch' | 'dinner' | 'to-go', string> = {
+  breakfast: 'Breakfast',
+  lunch: 'Lunch',
+  dinner: 'Dinner',
+  'to-go': 'To-go',
+};
+
+function MealCard({ result }: { result: MealResult }) {
+  const { meal } = result;
+  const phoneDisplay = meal.phone ? formatPhone(meal.phone) : null;
+  const callPhone = () => {
+    if (meal.phone) Linking.openURL(`tel:${meal.phone.replace(/\D/g, '')}`);
+  };
+  const openSite = () => Linking.openURL(meal.website);
+  const directions = () =>
+    openMaps(`${meal.name}, ${meal.address}, ${meal.city}, ${meal.state}`, meal.latitude, meal.longitude);
+  const openBadge =
+    result.openOnDay === true ? 'Open that day' : result.openOnDay === false ? 'Closed that day' : null;
+
+  return (
+    <View style={styles.serviceCard}>
+      <View style={styles.serviceHeader}>
+        <Text style={styles.serviceName}>{meal.name}</Text>
+        <Text style={styles.distance}>{result.distanceMiles.toFixed(1)} mi</Text>
+      </View>
+      <View style={styles.tags}>
+        {meal.mealTypes.map((t) => (
+          <Text key={t} style={styles.tag}>
+            {MEAL_TYPE_LABEL[t]}
+          </Text>
+        ))}
+        {openBadge && (
+          <Text style={[styles.tag, result.openOnDay === false && styles.tagMuted]}>{openBadge}</Text>
+        )}
+      </View>
+      <Text style={styles.hoursLine}>🕐 {meal.hours.text}</Text>
+      {meal.notes.length > 0 && <Text style={styles.extras}>{meal.notes.join(' · ')}</Text>}
+      <Text style={styles.serviceAddress}>
+        {meal.address}
+        {'\n'}
+        {meal.city}, {meal.state}
+      </Text>
+      <View style={styles.serviceActions}>
+        {phoneDisplay && (
+          <Pressable onPress={callPhone} hitSlop={6}>
+            <Text style={styles.serviceLink}>☎ {phoneDisplay}</Text>
+          </Pressable>
+        )}
+        <Pressable onPress={directions} hitSlop={6}>
+          <Text style={styles.serviceLink}>Directions ↗</Text>
+        </Pressable>
+        <Pressable onPress={openSite} hitSlop={6}>
+          <Text style={styles.serviceLink}>City listing ↗</Text>
+        </Pressable>
       </View>
     </View>
   );
