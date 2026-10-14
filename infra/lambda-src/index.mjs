@@ -183,6 +183,13 @@ Look at the photo and respond with ONLY a JSON object matching this schema (no p
   }
 }
 
+function cleanLabel(raw) {
+  if (!raw) return '';
+  // Esri returns labels like "1200 Market St, Saint Louis, MO 63103, USA".
+  // Strip the trailing country and collapse whitespace.
+  return raw.replace(/,\s*USA\s*$/, '').replace(/\s+/g, ' ').trim();
+}
+
 async function reverseGeocode(latitude, longitude) {
   try {
     const res = await location.send(
@@ -195,14 +202,28 @@ async function reverseGeocode(latitude, longitude) {
     const place = res.Results?.[0]?.Place;
     if (!place) return `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
 
-    const parts = [];
-    if (place.AddressNumber) parts.push(place.AddressNumber);
-    if (place.Street) parts.push(place.Street);
-    const street = parts.join(' ');
-    const city = place.Municipality ?? '';
+    const num = (place.AddressNumber ?? '').trim();
+    const street = (place.Street ?? '').trim();
+    const city = (place.Municipality ?? '').trim();
+    const region = (place.Region ?? '').trim();
+    const neighborhood = (place.Neighborhood ?? '').trim();
 
-    if (street && city) return `${street}, ${city}`;
-    if (place.Label) return place.Label.replace(/, USA$/, '');
+    // Only claim a street address when Esri actually gave us a street name.
+    // An AddressNumber alone (common for interpolated geocodes) is useless to
+    // the user — "1200" doesn't locate anything without the street.
+    if (street) {
+      const streetPart = num ? `${num} ${street}` : street;
+      if (city) return `${streetPart}, ${city}`;
+      return streetPart;
+    }
+
+    // No street — prefer the Label which usually contains the full line.
+    const label = cleanLabel(place.Label);
+    if (label) return label;
+
+    // Last resort: compose from whatever locale fields exist.
+    const localeParts = [neighborhood, city, region].filter(Boolean);
+    if (localeParts.length > 0) return `Near ${localeParts.join(', ')}`;
     return `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
   } catch (err) {
     console.error('Geocode failed', err);
