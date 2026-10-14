@@ -69,21 +69,19 @@ export async function requestUploadUrl(opts: ApiOptions): Promise<{ putUrl: stri
 }
 
 export async function uploadPhoto(putUrl: string, uri: string, signal?: AbortSignal): Promise<void> {
-  // Fetch the local file as a Blob, then PUT it. The presigned URL was signed
-  // with Tagging=tmp=true, so we must echo x-amz-tagging on the PUT.
+  // The presigned URL is signed with just Bucket+Key, so no extra headers are
+  // required on the client side. Fetching the local file as a Blob and
+  // PUTting it keeps the request shape minimal.
   const fileRes = await fetch(uri);
   const blob = await fileRes.blob();
   const res = await fetch(putUrl, {
     method: 'PUT',
-    headers: {
-      'content-type': 'image/jpeg',
-      'x-amz-tagging': 'tmp=true',
-    },
     body: blob,
     signal,
   });
   if (!res.ok) {
-    throw new Error(`Upload failed (${res.status})`);
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Upload failed (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`);
   }
 }
 

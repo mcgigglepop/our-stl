@@ -8,8 +8,8 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
-  DeleteObjectTaggingCommand,
   GetObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -99,13 +99,11 @@ async function presignHandler(event) {
   const userId = getUserId(event);
   if (!userId) return json(401, { error: 'unauthorized' });
 
+  // Minimal signed PUT: no ContentType or Tagging, so the client can PUT
+  // bytes without matching extra headers. The tmp/ prefix means the
+  // lifecycle rule reaps the object in 7 days if we never promote it.
   const key = `tmp/${userId}/${randomUUID()}.jpg`;
-  const command = new PutObjectCommand({
-    Bucket: BUCKET,
-    Key: key,
-    ContentType: 'image/jpeg',
-    Tagging: 'tmp=true',
-  });
+  const command = new PutObjectCommand({ Bucket: BUCKET, Key: key });
   const putUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
 
   return json(200, { putUrl, s3Key: key });
@@ -271,8 +269,17 @@ async function createReportHandler(event) {
   const reportId = makeReportId();
   const createdAt = new Date().toISOString();
 
-  // Strip the tmp=true tag so the lifecycle rule doesn't reap this photo.
-  await s3.send(new DeleteObjectTaggingCommand({ Bucket: BUCKET, Key: s3Key }));
+  // Move the object out of tmp/ so the lifecycle rule doesn't reap it.
+  // Copy to reports/<userId>/<reportId>.jpg, then delete the tmp original.
+  const persistedKey = `reports/${userId}/${reportId}.jpg`;
+  await s3.send(
+    new CopyObjectCommand({
+      Bucket: BUCKET,
+      Key: persistedKey,
+      CopySource: `${BUCKET}/${encodeURIComponent(s3Key)}`,
+    })
+  );
+  await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: s3Key })).catch(() => {});
 
   const report = {
     userId,
@@ -283,7 +290,7 @@ async function createReportHandler(event) {
     locationLabel: locationLabel ?? '',
     latitude,
     longitude,
-    s3Key,
+    s3Key: persistedKey,
     createdAt,
   };
 

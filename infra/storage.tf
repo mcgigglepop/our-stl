@@ -46,20 +46,18 @@ resource "aws_s3_bucket_cors_configuration" "reports" {
   }
 }
 
-# Analyze-only uploads get tagged tmp=true; this rule reaps them after 7 days.
-# POST /reports strips the tag so persisted photos survive.
+# Uploads land in tmp/ and move to reports/ on POST /reports. The lifecycle
+# rule reaps anything left in tmp/ after 7 days so abandoned analyze uploads
+# don't accumulate.
 resource "aws_s3_bucket_lifecycle_configuration" "reports" {
   bucket = aws_s3_bucket.reports.id
 
   rule {
-    id     = "expire-untagged-analyze-uploads"
+    id     = "expire-tmp-uploads"
     status = "Enabled"
 
     filter {
-      tag {
-        key   = "tmp"
-        value = "true"
-      }
+      prefix = "tmp/"
     }
 
     expiration {
