@@ -1,0 +1,14 @@
+# Copy this file to terraform.tfvars and adjust as needed
+aws_region          = "us-east-1"
+environment         = "dev"
+app_name            = "our-stl"
+user_pool_name      = "our-stl-user-pool"
+client_name         = "our-stl-mobile-client"
+password_minimum_length = 12
+
+tags = {
+  Environment = "dev"
+  Project     = "our-stl"
+  ManagedBy   = "Terraform"
+  Owner       = "your-team"
+}

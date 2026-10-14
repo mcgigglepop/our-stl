@@ -1,0 +1,75 @@
+# Dependencies
+node_modules/
+*.pnp
+.pnp.js
+package-lock.json
+yarn.lock
+bun.lockb
+
+# Expo
+.expo/
+dist/
+.expo-shared/
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# Testing
+coverage/
+*.lcov
+.nyc_output/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Build
+build/
+dist/
+*.apk
+*.aab
+*.ipa
+*.app
+
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/terraform.tfstate*
+infra/terraform.tfplan
+infra/*.tfvars
+infra/!terraform.tfvars.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Misc
+.cache/
+temp/
+tmp/
+*.tmp
+
+# Credentials & Secrets
+.aws/
+.aws-credentials
+aws-credentials.json
+secrets.json
+*.pem
+*.key
