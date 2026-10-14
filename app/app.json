@@ -32,6 +32,12 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "OurSTL uses your location to find the nearest health centers, meal programs, and other essentials to you."
+        }
       ]
     ],
     "experiments": {
