@@ -277,7 +277,104 @@ export default function FoodShelterScreen() {
           </Text>
         </View>
       </View>
+
+      <ResourceGuide />
     </ScrollView>
+  );
+}
+
+interface ResourceCard {
+  icon: string;
+  title: string;
+  body: string;
+  action: () => void;
+  actionLabel: string;
+  variant: 'primary' | 'secondary';
+}
+
+function ResourceGuide() {
+  const open211 = () => Linking.openURL('https://www.211helps.org/');
+  const call211 = () => Linking.openURL('tel:211');
+  const previewMap = () =>
+    Alert.alert(
+      'Future neighborhood map',
+      'Soon you’ll see verified service locations, accessibility details, and intake hours on a map. For now, tap any resource chip above — distance sorting is already powered by your location.'
+    );
+
+  const cards: ResourceCard[] = [
+    {
+      icon: '🍲',
+      title: 'Food assistance',
+      body: 'Find nearby food pantries and meal programs. Confirm hours and requirements before traveling.',
+      action: open211,
+      actionLabel: 'Find food resources ↗',
+      variant: 'secondary',
+    },
+    {
+      icon: '🏠',
+      title: 'Emergency shelter',
+      body: 'Connect with local resource navigators who can help explain shelter and housing options.',
+      action: call211,
+      actionLabel: 'Call 211',
+      variant: 'primary',
+    },
+    {
+      icon: '🚌',
+      title: 'Transportation and basics',
+      body: 'Ask about transit assistance, showers, clothing, document replacement, and related services.',
+      action: open211,
+      actionLabel: 'Browse 211 services ↗',
+      variant: 'secondary',
+    },
+    {
+      icon: '📍',
+      title: 'Near me',
+      body: 'Preview what a future verified-locations map could look like.',
+      action: previewMap,
+      actionLabel: 'Preview future feature',
+      variant: 'secondary',
+    },
+  ];
+
+  return (
+    <View style={styles.guideSection}>
+      <View style={styles.sectionHead}>
+        <Text style={styles.sectionTitle}>What do you need today?</Text>
+        <Text style={styles.sectionMeta}>Resource guide</Text>
+      </View>
+      <View style={styles.resourceGrid}>
+        {cards.map((c) => (
+          <View key={c.title} style={styles.resourceCard}>
+            <View style={styles.resourceIcon}>
+              <Text style={styles.resourceIconText}>{c.icon}</Text>
+            </View>
+            <Text style={styles.resourceTitle}>{c.title}</Text>
+            <Text style={styles.resourceBody}>{c.body}</Text>
+            <Pressable
+              onPress={c.action}
+              style={({ pressed }) => [
+                c.variant === 'primary' ? styles.resourceBtnPrimary : styles.resourceBtnSecondary,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text
+                style={
+                  c.variant === 'primary' ? styles.resourceBtnPrimaryText : styles.resourceBtnSecondaryText
+                }
+              >
+                {c.actionLabel}
+              </Text>
+            </Pressable>
+          </View>
+        ))}
+      </View>
+      <View style={styles.bottomNotice}>
+        <Text style={styles.bottomNoticeText}>
+          Shelter and resource availability changes frequently. OurSTL doesn’t display real-time open beds
+          — contact a provider or 211 to confirm options.
+        </Text>
+      </View>
+    </View>
   );
 }
 
@@ -1299,5 +1396,101 @@ const styles = StyleSheet.create({
   tagRestriction: {
     backgroundColor: '#fff0da',
     color: '#966021',
+  },
+  guideSection: {
+    gap: spacing.three,
+  },
+  sectionHead: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: spacing.three,
+    marginTop: spacing.two,
+  },
+  sectionTitle: {
+    ...typography.h2,
+    fontSize: 22,
+    color: colors.navy,
+  },
+  sectionMeta: {
+    color: colors.muted,
+    fontSize: 13,
+  },
+  resourceGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    columnGap: 12,
+    rowGap: 12,
+  },
+  resourceCard: {
+    width: '48%',
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: radii.card,
+    padding: 20,
+    gap: 8,
+  },
+  resourceIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#e6f3f1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  resourceIconText: {
+    fontSize: 22,
+  },
+  resourceTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: colors.ink,
+  },
+  resourceBody: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: '#617284',
+  },
+  resourceBtnPrimary: {
+    marginTop: spacing.two,
+    backgroundColor: colors.teal,
+    borderRadius: 11,
+    paddingVertical: 11,
+    paddingHorizontal: 17,
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+  },
+  resourceBtnPrimaryText: {
+    color: colors.white,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  resourceBtnSecondary: {
+    marginTop: spacing.two,
+    backgroundColor: colors.secondaryBg,
+    borderRadius: 11,
+    paddingVertical: 11,
+    paddingHorizontal: 17,
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+  },
+  resourceBtnSecondaryText: {
+    color: colors.secondaryText,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  bottomNotice: {
+    marginTop: spacing.three,
+    backgroundColor: '#f1f7fa',
+    borderLeftWidth: 3,
+    borderLeftColor: '#418ca7',
+    padding: 13,
+    borderRadius: 8,
+  },
+  bottomNoticeText: {
+    color: '#4a687b',
+    fontSize: 12,
+    lineHeight: 18,
   },
 });
