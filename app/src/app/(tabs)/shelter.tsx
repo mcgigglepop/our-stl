@@ -14,6 +14,8 @@ import {
 import { Hero } from '@/components/Hero';
 import { useCurrentLocation } from '@/hooks/useCurrentLocation';
 import { findHealthCentersNear, type HealthCenter } from '@/services/hrsa';
+import { findHygieneNear, type DayFilter, type HygieneResult } from '@/services/hygiene';
+import { DAY_LABEL, DAY_ORDER, type DayKey } from '@/services/stlDropIns';
 import { findWaterNear, type WaterSource } from '@/services/water';
 import { colors, radii, shelterHeroGradient, spacing, typography } from '@/theme';
 
@@ -31,7 +33,7 @@ const NEEDS: Need[] = [
   { key: 'meal', symbol: '🥘', label: 'Free meals', resourceLabel: 'Prepared meals', active: false },
   { key: 'pantry', symbol: '🥫', label: 'Food pantry', resourceLabel: 'Food pantry', active: false },
   { key: 'shelter', symbol: '🏠', label: 'Shelter referrals', resourceLabel: 'Shelter / housing intake', active: false },
-  { key: 'hygiene', symbol: '🚿', label: 'Showers & hygiene', resourceLabel: 'Showers / clothing / laundry', active: false },
+  { key: 'hygiene', symbol: '🚿', label: 'Showers & hygiene', resourceLabel: 'Showers / clothing / laundry', active: true },
   { key: 'water', symbol: '💧', label: 'Drinking water', resourceLabel: 'Drinking water', active: true },
   { key: 'health', symbol: '🩺', label: 'Medical assistance', resourceLabel: 'Healthcare / medicine support', active: true },
 ];
@@ -60,16 +62,25 @@ export default function FoodShelterScreen() {
   const [selected, setSelected] = useState<NeedKey | null>(null);
   const [centers, setCenters] = useState<HealthCenter[]>([]);
   const [waterSources, setWaterSources] = useState<WaterSource[]>([]);
+  const [hygieneResults, setHygieneResults] = useState<HygieneResult[]>([]);
+  const [dayFilter, setDayFilter] = useState<DayFilter>('any');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const location = useCurrentLocation();
 
-  const resultsCount = selected === 'health' ? centers.length : selected === 'water' ? waterSources.length : 0;
+  const resultsCount =
+    selected === 'health'
+      ? centers.length
+      : selected === 'water'
+        ? waterSources.length
+        : selected === 'hygiene'
+          ? hygieneResults.length
+          : 0;
 
   const loadData = useCallback(
-    async (need: NeedKey) => {
+    async (need: NeedKey, day: DayFilter) => {
       if (!location.coords) return;
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -95,6 +106,12 @@ export default function FoodShelterScreen() {
             setWaterSources(results);
             setVisibleCount(PAGE_SIZE);
           }
+        } else if (need === 'hygiene') {
+          const results = findHygieneNear(location.coords, { day });
+          if (!controller.signal.aborted) {
+            setHygieneResults(results);
+            setVisibleCount(PAGE_SIZE);
+          }
         }
       } catch (err) {
         if (!controller.signal.aborted) {
@@ -108,11 +125,11 @@ export default function FoodShelterScreen() {
   );
 
   useEffect(() => {
-    if ((selected === 'health' || selected === 'water') && location.coords) {
-      loadData(selected);
+    if ((selected === 'health' || selected === 'water' || selected === 'hygiene') && location.coords) {
+      loadData(selected, dayFilter);
     }
     return () => abortRef.current?.abort();
-  }, [selected, location.coords, loadData]);
+  }, [selected, location.coords, loadData, dayFilter]);
 
   const handleChipPress = (need: Need) => {
     if (!need.active) {
@@ -175,13 +192,19 @@ export default function FoodShelterScreen() {
           </View>
         )}
 
-        {(selected === 'health' || selected === 'water') && (
+        {selected === 'hygiene' && (
+          <DayPicker value={dayFilter} onChange={setDayFilter} />
+        )}
+
+        {(selected === 'health' || selected === 'water' || selected === 'hygiene') && (
           <ResultsSection
             kind={selected}
             loading={loading}
             error={fetchError}
             centers={centers}
             waterSources={waterSources}
+            hygieneResults={hygieneResults}
+            dayFilter={dayFilter}
             visibleCount={visibleCount}
             totalCount={resultsCount}
             onShowMore={() => setVisibleCount((n) => Math.min(n + PAGE_SIZE, resultsCount))}
@@ -189,7 +212,7 @@ export default function FoodShelterScreen() {
             locationError={location.error}
             onRetry={() => {
               if (!location.coords) location.retry();
-              else loadData(selected);
+              else loadData(selected, dayFilter);
             }}
           />
         )}
@@ -206,11 +229,13 @@ export default function FoodShelterScreen() {
 }
 
 interface ResultsSectionProps {
-  kind: 'health' | 'water';
+  kind: 'health' | 'water' | 'hygiene';
   loading: boolean;
   error: string | null;
   centers: HealthCenter[];
   waterSources: WaterSource[];
+  hygieneResults: HygieneResult[];
+  dayFilter: DayFilter;
   visibleCount: number;
   totalCount: number;
   onShowMore: () => void;
@@ -219,12 +244,44 @@ interface ResultsSectionProps {
   onRetry: () => void;
 }
 
+function DayPicker({ value, onChange }: { value: DayFilter; onChange: (d: DayFilter) => void }) {
+  const options: { key: DayFilter; label: string }[] = [
+    { key: 'any', label: 'Any day' },
+    ...DAY_ORDER.map((d: DayKey) => ({ key: d as DayFilter, label: DAY_LABEL[d] })),
+  ];
+  return (
+    <View>
+      <Text style={styles.pickerLabel}>Day to visit</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dayRow}>
+        {options.map((o) => {
+          const active = value === o.key;
+          return (
+            <Pressable
+              key={o.key}
+              onPress={() => onChange(o.key)}
+              style={({ pressed }) => [
+                styles.dayPill,
+                active && styles.dayPillActive,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text style={[styles.dayPillText, active && styles.dayPillTextActive]}>{o.label}</Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
 function ResultsSection({
   kind,
   loading,
   error,
   centers,
   waterSources,
+  hygieneResults,
+  dayFilter,
   visibleCount,
   totalCount,
   onShowMore,
@@ -263,6 +320,15 @@ function ResultsSection({
         </View>
       )}
 
+      {kind === 'hygiene' && (
+        <View style={styles.infoBanner}>
+          <Text style={styles.infoText}>
+            Drop-in centers from the City of St. Louis directory. Published hours shift seasonally — call
+            before visiting.
+          </Text>
+        </View>
+      )}
+
       {loading && (
         <View style={styles.state}>
           <ActivityIndicator color={colors.teal} />
@@ -286,7 +352,9 @@ function ResultsSection({
           <Text style={styles.stateText}>
             {kind === 'health'
               ? 'No health centers found within 15 miles.'
-              : 'No water sources found within 10 miles.'}
+              : kind === 'water'
+                ? 'No water sources found within 10 miles.'
+                : 'No drop-in centers match the selected day.'}
           </Text>
         </View>
       )}
@@ -310,6 +378,18 @@ function ResultsSection({
           </Text>
           {waterSources.slice(0, visibleCount).map((s) => (
             <WaterCard key={s.id} source={s} />
+          ))}
+        </>
+      )}
+
+      {!loading && !error && totalCount > 0 && kind === 'hygiene' && (
+        <>
+          <Text style={styles.resultsHeader}>
+            {hygieneResults.length} drop-in center{hygieneResults.length === 1 ? '' : 's'}
+            {dayFilter === 'any' ? ' nearby' : ` open ${DAY_LABEL[dayFilter]} or hours unposted`}.
+          </Text>
+          {hygieneResults.slice(0, visibleCount).map((r) => (
+            <HygieneCard key={r.center.id} result={r} />
           ))}
         </>
       )}
@@ -424,6 +504,62 @@ function WaterCard({ source }: { source: WaterSource }) {
             <Text style={styles.serviceLink}>Website ↗</Text>
           </Pressable>
         )}
+      </View>
+    </View>
+  );
+}
+
+function HygieneCard({ result }: { result: HygieneResult }) {
+  const { center } = result;
+  const phoneDisplay = formatPhone(center.phone);
+  const callPhone = () => Linking.openURL(`tel:${center.phone.replace(/\D/g, '')}`);
+  const openSite = () => Linking.openURL(center.website);
+  const directions = () =>
+    openMaps(`${center.name}, ${center.address}, ${center.city}, ${center.state} ${center.zip}`, center.latitude, center.longitude);
+
+  const openBadge =
+    result.openOnDay === true ? 'Open that day' : result.openOnDay === false ? 'Closed that day' : null;
+
+  return (
+    <View style={styles.serviceCard}>
+      <View style={styles.serviceHeader}>
+        <Text style={styles.serviceName}>{center.name}</Text>
+        <Text style={styles.distance}>{result.distanceMiles.toFixed(1)} mi</Text>
+      </View>
+      <Text style={styles.parentOrg}>
+        {center.audience === 'youth' ? 'Youth drop-in' : center.audience === 'adults' ? 'Adults drop-in' : 'Drop-in center'}
+      </Text>
+      <View style={styles.tags}>
+        {center.services.map((s) => (
+          <Text key={s} style={styles.tag}>
+            {s}
+          </Text>
+        ))}
+        {openBadge && (
+          <Text style={[styles.tag, result.openOnDay === false && styles.tagMuted]}>{openBadge}</Text>
+        )}
+      </View>
+      {center.extras.length > 0 && (
+        <Text style={styles.extras}>Also: {center.extras.join(' · ')}</Text>
+      )}
+      <Text style={styles.hoursLine}>🕐 {center.hours.text}</Text>
+      <Text style={styles.serviceAddress}>
+        {center.address}
+        {'\n'}
+        {center.city}, {center.state} {center.zip}
+      </Text>
+      <View style={styles.serviceActions}>
+        {phoneDisplay && (
+          <Pressable onPress={callPhone} hitSlop={6}>
+            <Text style={styles.serviceLink}>☎ {phoneDisplay}</Text>
+          </Pressable>
+        )}
+        <Pressable onPress={directions} hitSlop={6}>
+          <Text style={styles.serviceLink}>Directions ↗</Text>
+        </Pressable>
+        <Pressable onPress={openSite} hitSlop={6}>
+          <Text style={styles.serviceLink}>City listing ↗</Text>
+        </Pressable>
       </View>
     </View>
   );
@@ -695,5 +831,55 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     marginTop: spacing.one,
+  },
+  pickerLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginTop: spacing.three,
+    marginBottom: 6,
+  },
+  dayRow: {
+    gap: 8,
+    paddingVertical: 2,
+    paddingRight: 2,
+  },
+  dayPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 30,
+    borderWidth: 1,
+    borderColor: '#dce6eb',
+    backgroundColor: colors.white,
+  },
+  dayPillActive: {
+    backgroundColor: '#dff2ed',
+    borderColor: '#dff2ed',
+  },
+  dayPillText: {
+    color: '#587086',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  dayPillTextActive: {
+    color: '#08766f',
+  },
+  extras: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 2,
+  },
+  hoursLine: {
+    color: '#2a4a5a',
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  tagMuted: {
+    backgroundColor: '#f1e4e2',
+    color: colors.error,
   },
 });
