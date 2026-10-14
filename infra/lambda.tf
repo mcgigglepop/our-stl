@@ -63,10 +63,15 @@ data "aws_iam_policy_document" "api" {
   }
 
   statement {
-    sid       = "BedrockInvoke"
-    effect    = "Allow"
-    actions   = ["bedrock:InvokeModel"]
-    resources = ["arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/${var.bedrock_model_id}"]
+    sid     = "BedrockInvoke"
+    effect  = "Allow"
+    actions = ["bedrock:InvokeModel"]
+    # Modern Claude model IDs on Bedrock can be either foundation-model ARNs
+    # or inference-profile ARNs; wildcard both to avoid ARN-shape mismatches.
+    resources = [
+      "arn:aws:bedrock:*::foundation-model/anthropic.*",
+      "arn:aws:bedrock:*:*:inference-profile/*",
+    ]
   }
 
   statement {
