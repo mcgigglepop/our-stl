@@ -1,6 +1,7 @@
 import * as ImagePicker from 'expo-image-picker';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
   Linking,
@@ -12,8 +13,11 @@ import {
   View,
 } from 'react-native';
 
+import { useAuth } from '@/auth/CognitoContext';
 import { Dropdown } from '@/components/Dropdown';
 import { Hero } from '@/components/Hero';
+import { MyReportsCard } from '@/components/MyReportsCard';
+import { useCurrentLocation } from '@/hooks/useCurrentLocation';
 import {
   ALL_ISSUES,
   draftDescription,
@@ -22,6 +26,14 @@ import {
   type CivicIssue,
   type Jurisdiction,
 } from '@/services/civicRouting';
+import {
+  analyzeReport,
+  createReport,
+  listMyReports,
+  requestUploadUrl,
+  uploadPhoto,
+  type Report,
+} from '@/services/reports';
 import { colors, heroGradient, radii, spacing, typography } from '@/theme';
 
 const WORKFLOW_STEPS = [
@@ -38,6 +50,10 @@ const JURISDICTIONS: { value: Jurisdiction; label: string }[] = [
 ];
 
 export default function CivicReportingScreen() {
+  const { tokens } = useAuth();
+  const location = useCurrentLocation();
+  const idToken = tokens?.idToken ?? null;
+
   const [routingIssue, setRoutingIssue] = useState<CivicIssue>('Pothole');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('city');
 
@@ -45,6 +61,15 @@ export default function CivicReportingScreen() {
   const [reportLocation, setReportLocation] = useState('');
   const [reportDescription, setReportDescription] = useState('');
   const [photo, setPhoto] = useState<ImagePicker.ImagePickerAsset | null>(null);
+  const [s3Key, setS3Key] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisHint, setAnalysisHint] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const [reports, setReports] = useState<Report[]>([]);
+  const [loadingReports, setLoadingReports] = useState(false);
+  const [reportsError, setReportsError] = useState<string | null>(null);
 
   const issueOptions = useMemo(() => ALL_ISSUES.map((i) => ({ value: i, label: i })), []);
   const routingResult = useMemo(
@@ -52,8 +77,85 @@ export default function CivicReportingScreen() {
     [routingIssue, jurisdiction]
   );
 
+  const refreshReports = useCallback(async () => {
+    if (!idToken) return;
+    setLoadingReports(true);
+    setReportsError(null);
+    try {
+      const res = await listMyReports({ idToken });
+      setReports(res.reports);
+    } catch (err) {
+      setReportsError(err instanceof Error ? err.message : 'Failed to load your reports.');
+    } finally {
+      setLoadingReports(false);
+    }
+  }, [idToken]);
+
+  useEffect(() => {
+    refreshReports();
+  }, [refreshReports]);
+
+  const resetForm = () => {
+    setPhoto(null);
+    setS3Key(null);
+    setAnalysisHint(null);
+    setRejectReason(null);
+    setReportLocation('');
+    setReportDescription('');
+    setReportCategory('Damaged sidewalk');
+  };
+
   const handleHelpDraft = () => {
     setReportDescription(draftDescription(reportCategory));
+  };
+
+  const runAnalysis = async (asset: ImagePicker.ImagePickerAsset) => {
+    if (!idToken) {
+      Alert.alert('Signed out', 'Please sign in again to submit a report.');
+      return;
+    }
+    if (!location.coords) {
+      Alert.alert(
+        'Location needed',
+        'OurSTL needs your location to tag the report. Enable location access and try again.'
+      );
+      return;
+    }
+    setAnalyzing(true);
+    setRejectReason(null);
+    setAnalysisHint(null);
+    try {
+      const { putUrl, s3Key: newKey } = await requestUploadUrl({ idToken });
+      await uploadPhoto(putUrl, asset.uri);
+      const result = await analyzeReport({
+        idToken,
+        s3Key: newKey,
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      });
+      if (result.kind === 'rejected') {
+        setPhoto(null);
+        setS3Key(null);
+        setRejectReason(result.reason);
+        return;
+      }
+      setS3Key(newKey);
+      if (result.category) setReportCategory(result.category);
+      if (result.description) setReportDescription(result.description);
+      if (result.locationLabel) setReportLocation(result.locationLabel);
+      if (result.confidence === 'low') {
+        setAnalysisHint("We're not sure what this is — double-check the category before submitting.");
+      }
+    } catch (err) {
+      Alert.alert(
+        'Analysis failed',
+        err instanceof Error ? err.message : 'Could not analyze the photo. Fill in the form manually.'
+      );
+      setPhoto(null);
+      setS3Key(null);
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   const handleAttachPhoto = async () => {
@@ -67,20 +169,56 @@ export default function CivicReportingScreen() {
       quality: 0.6,
     });
     if (!result.canceled && result.assets[0]) {
-      setPhoto(result.assets[0]);
+      const asset = result.assets[0];
+      setPhoto(asset);
+      setS3Key(null);
+      setRejectReason(null);
+      runAnalysis(asset);
     }
   };
 
-  const handleSubmitReport = () => {
+  const handleSubmitReport = async () => {
+    if (!idToken) {
+      Alert.alert('Signed out', 'Please sign in again to submit a report.');
+      return;
+    }
+    if (!s3Key || !photo) {
+      Alert.alert('Add a photo', 'Attach a photo of the issue — it anchors your report.');
+      return;
+    }
+    if (!location.coords) {
+      Alert.alert('Location needed', 'Enable location access so we can tag your report.');
+      return;
+    }
     if (!reportLocation.trim()) {
       Alert.alert('Add a location', 'Tell us where the issue is before submitting.');
       return;
     }
-    Alert.alert(
-      'Review your report',
-      `Category: ${reportCategory}\nLocation: ${reportLocation}\n\n${reportDescription || 'No description provided'}\n\nThis prototype doesn’t send the report to the City of St. Louis. Use the official CSB portal for a real service request.`,
-      [{ text: 'OK' }]
-    );
+    setSubmitting(true);
+    try {
+      const { report } = await createReport({
+        idToken,
+        s3Key,
+        category: reportCategory,
+        description: reportDescription,
+        locationLabel: reportLocation,
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      });
+      Alert.alert(
+        'Report filed',
+        `${report.category} at ${report.locationLabel || 'your location'} saved to My requests. OurSTL doesn’t forward reports to the City automatically — use the official CSB portal for an official 311 service request.`
+      );
+      resetForm();
+      refreshReports();
+    } catch (err) {
+      Alert.alert(
+        'Submission failed',
+        err instanceof Error ? err.message : 'Something went wrong. Please try again.'
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const openCsbPortal = () => Linking.openURL('https://www.stlouis-mo.gov/csb/');
@@ -195,6 +333,14 @@ export default function CivicReportingScreen() {
         </View>
       </View>
 
+      {/* ───── My requests ───── */}
+      <MyReportsCard
+        reports={reports}
+        loading={loadingReports}
+        error={reportsError}
+        onRefresh={refreshReports}
+      />
+
       {/* ───── Report a civic issue ───── */}
       <View style={styles.sectionHead}>
         <Text style={styles.sectionTitle}>Report a civic issue</Text>
@@ -204,21 +350,41 @@ export default function CivicReportingScreen() {
       <View style={styles.card}>
         <Pressable
           onPress={handleAttachPhoto}
+          disabled={analyzing}
           style={({ pressed }) => [styles.upload, pressed && styles.pressed]}
         >
           {photo ? (
             <>
               <Image source={{ uri: photo.uri }} style={styles.uploadPreview} resizeMode="cover" />
-              <Text style={styles.uploadReplace}>Tap to replace photo</Text>
+              {analyzing ? (
+                <View style={styles.analyzeOverlay}>
+                  <ActivityIndicator color={colors.white} />
+                  <Text style={styles.analyzeOverlayText}>Analyzing photo…</Text>
+                </View>
+              ) : (
+                <Text style={styles.uploadReplace}>Tap to replace photo</Text>
+              )}
             </>
           ) : (
             <>
               <Text style={styles.uploadIcon}>📷</Text>
               <Text style={styles.uploadLabel}>Take or upload a photo</Text>
-              <Text style={styles.uploadHint}>JPG or PNG · Demo preview</Text>
+              <Text style={styles.uploadHint}>We'll auto-fill the form from the photo + your location</Text>
             </>
           )}
         </Pressable>
+
+        {rejectReason && (
+          <View style={styles.rejectBanner}>
+            <Text style={styles.rejectText}>{rejectReason}</Text>
+          </View>
+        )}
+
+        {analysisHint && (
+          <View style={styles.hintBanner}>
+            <Text style={styles.hintText}>{analysisHint}</Text>
+          </View>
+        )}
 
         <View style={{ marginTop: spacing.three }}>
           <Dropdown<CivicIssue>
@@ -286,9 +452,18 @@ export default function CivicReportingScreen() {
         </View>
         <Pressable
           onPress={handleSubmitReport}
-          style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
+          disabled={submitting || analyzing}
+          style={({ pressed }) => [
+            styles.primaryBtn,
+            (submitting || analyzing) && styles.primaryBtnDisabled,
+            pressed && styles.pressed,
+          ]}
         >
-          <Text style={styles.primaryBtnText}>Review & create community report →</Text>
+          {submitting ? (
+            <ActivityIndicator color={colors.white} />
+          ) : (
+            <Text style={styles.primaryBtnText}>Review & create community report →</Text>
+          )}
         </Pressable>
       </View>
 
@@ -592,4 +767,48 @@ const styles = StyleSheet.create({
   },
 
   pressed: { opacity: 0.75 },
+  analyzeOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#17334ecc',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.two,
+    borderRadius: 15,
+  },
+  analyzeOverlayText: {
+    color: colors.white,
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  rejectBanner: {
+    marginTop: spacing.two,
+    backgroundColor: colors.errorBg,
+    padding: 12,
+    borderRadius: 8,
+  },
+  rejectText: {
+    color: colors.error,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  hintBanner: {
+    marginTop: spacing.two,
+    backgroundColor: '#fff8e8',
+    borderLeftWidth: 3,
+    borderLeftColor: '#e7ad4e',
+    padding: 11,
+    borderRadius: 6,
+  },
+  hintText: {
+    color: '#634b24',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  primaryBtnDisabled: {
+    opacity: 0.5,
+  },
 });
