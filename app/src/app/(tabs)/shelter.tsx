@@ -15,7 +15,9 @@ import { Hero } from '@/components/Hero';
 import { useCurrentLocation } from '@/hooks/useCurrentLocation';
 import { findHealthCentersNear, type HealthCenter } from '@/services/hrsa';
 import { findHygieneNear, type DayFilter, type HygieneResult } from '@/services/hygiene';
+import { findSheltersNear, type AudienceFilter, type ShelterResult } from '@/services/shelters';
 import { DAY_LABEL, DAY_ORDER, type DayKey } from '@/services/stlDropIns';
+import { AUDIENCE_LABEL, type ShelterAudience } from '@/services/stlShelters';
 import { findWaterNear, type WaterSource } from '@/services/water';
 import { colors, radii, shelterHeroGradient, spacing, typography } from '@/theme';
 
@@ -32,7 +34,7 @@ interface Need {
 const NEEDS: Need[] = [
   { key: 'meal', symbol: '🥘', label: 'Free meals', resourceLabel: 'Prepared meals', active: false },
   { key: 'pantry', symbol: '🥫', label: 'Food pantry', resourceLabel: 'Food pantry', active: false },
-  { key: 'shelter', symbol: '🏠', label: 'Shelter referrals', resourceLabel: 'Shelter / housing intake', active: false },
+  { key: 'shelter', symbol: '🏠', label: 'Shelter referrals', resourceLabel: 'Shelter / housing intake', active: true },
   { key: 'hygiene', symbol: '🚿', label: 'Showers & hygiene', resourceLabel: 'Showers / clothing / laundry', active: true },
   { key: 'water', symbol: '💧', label: 'Drinking water', resourceLabel: 'Drinking water', active: true },
   { key: 'health', symbol: '🩺', label: 'Medical assistance', resourceLabel: 'Healthcare / medicine support', active: true },
@@ -63,7 +65,9 @@ export default function FoodShelterScreen() {
   const [centers, setCenters] = useState<HealthCenter[]>([]);
   const [waterSources, setWaterSources] = useState<WaterSource[]>([]);
   const [hygieneResults, setHygieneResults] = useState<HygieneResult[]>([]);
+  const [shelterResults, setShelterResults] = useState<ShelterResult[]>([]);
   const [dayFilter, setDayFilter] = useState<DayFilter>('any');
+  const [audienceFilter, setAudienceFilter] = useState<AudienceFilter>('all');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -77,10 +81,12 @@ export default function FoodShelterScreen() {
         ? waterSources.length
         : selected === 'hygiene'
           ? hygieneResults.length
-          : 0;
+          : selected === 'shelter'
+            ? shelterResults.length
+            : 0;
 
   const loadData = useCallback(
-    async (need: NeedKey, day: DayFilter) => {
+    async (need: NeedKey, day: DayFilter, audience: AudienceFilter) => {
       if (!location.coords) return;
       abortRef.current?.abort();
       const controller = new AbortController();
@@ -112,6 +118,12 @@ export default function FoodShelterScreen() {
             setHygieneResults(results);
             setVisibleCount(PAGE_SIZE);
           }
+        } else if (need === 'shelter') {
+          const results = findSheltersNear(location.coords, { audience, day });
+          if (!controller.signal.aborted) {
+            setShelterResults(results);
+            setVisibleCount(PAGE_SIZE);
+          }
         }
       } catch (err) {
         if (!controller.signal.aborted) {
@@ -125,11 +137,17 @@ export default function FoodShelterScreen() {
   );
 
   useEffect(() => {
-    if ((selected === 'health' || selected === 'water' || selected === 'hygiene') && location.coords) {
-      loadData(selected, dayFilter);
+    if (
+      (selected === 'health' ||
+        selected === 'water' ||
+        selected === 'hygiene' ||
+        selected === 'shelter') &&
+      location.coords
+    ) {
+      loadData(selected, dayFilter, audienceFilter);
     }
     return () => abortRef.current?.abort();
-  }, [selected, location.coords, loadData, dayFilter]);
+  }, [selected, location.coords, loadData, dayFilter, audienceFilter]);
 
   const handleChipPress = (need: Need) => {
     if (!need.active) {
@@ -192,11 +210,17 @@ export default function FoodShelterScreen() {
           </View>
         )}
 
-        {selected === 'hygiene' && (
+        {selected === 'shelter' && (
+          <AudiencePicker value={audienceFilter} onChange={setAudienceFilter} />
+        )}
+        {(selected === 'hygiene' || selected === 'shelter') && (
           <DayPicker value={dayFilter} onChange={setDayFilter} />
         )}
 
-        {(selected === 'health' || selected === 'water' || selected === 'hygiene') && (
+        {(selected === 'health' ||
+          selected === 'water' ||
+          selected === 'hygiene' ||
+          selected === 'shelter') && (
           <ResultsSection
             kind={selected}
             loading={loading}
@@ -204,7 +228,9 @@ export default function FoodShelterScreen() {
             centers={centers}
             waterSources={waterSources}
             hygieneResults={hygieneResults}
+            shelterResults={shelterResults}
             dayFilter={dayFilter}
+            audienceFilter={audienceFilter}
             visibleCount={visibleCount}
             totalCount={resultsCount}
             onShowMore={() => setVisibleCount((n) => Math.min(n + PAGE_SIZE, resultsCount))}
@@ -212,7 +238,7 @@ export default function FoodShelterScreen() {
             locationError={location.error}
             onRetry={() => {
               if (!location.coords) location.retry();
-              else loadData(selected, dayFilter);
+              else loadData(selected, dayFilter, audienceFilter);
             }}
           />
         )}
@@ -229,19 +255,52 @@ export default function FoodShelterScreen() {
 }
 
 interface ResultsSectionProps {
-  kind: 'health' | 'water' | 'hygiene';
+  kind: 'health' | 'water' | 'hygiene' | 'shelter';
   loading: boolean;
   error: string | null;
   centers: HealthCenter[];
   waterSources: WaterSource[];
   hygieneResults: HygieneResult[];
+  shelterResults: ShelterResult[];
   dayFilter: DayFilter;
+  audienceFilter: AudienceFilter;
   visibleCount: number;
   totalCount: number;
   onShowMore: () => void;
   locationStatus: ReturnType<typeof useCurrentLocation>['status'];
   locationError: string | null;
   onRetry: () => void;
+}
+
+function AudiencePicker({
+  value,
+  onChange,
+}: {
+  value: AudienceFilter;
+  onChange: (a: AudienceFilter) => void;
+}) {
+  const options: AudienceFilter[] = ['all', 'adults', 'families', 'women', 'men', 'youth'];
+  return (
+    <View>
+      <Text style={styles.pickerLabel}>Audience</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dayRow}>
+        {options.map((o) => {
+          const active = value === o;
+          return (
+            <Pressable
+              key={o}
+              onPress={() => onChange(o)}
+              style={({ pressed }) => [styles.dayPill, active && styles.dayPillActive, pressed && styles.pressed]}
+            >
+              <Text style={[styles.dayPillText, active && styles.dayPillTextActive]}>
+                {AUDIENCE_LABEL[o as ShelterAudience] ?? 'All'}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
 }
 
 function DayPicker({ value, onChange }: { value: DayFilter; onChange: (d: DayFilter) => void }) {
@@ -281,7 +340,9 @@ function ResultsSection({
   centers,
   waterSources,
   hygieneResults,
+  shelterResults,
   dayFilter,
+  audienceFilter,
   visibleCount,
   totalCount,
   onShowMore,
@@ -329,6 +390,17 @@ function ResultsSection({
         </View>
       )}
 
+      {kind === 'shelter' && <Shelter211Card />}
+
+      {kind === 'shelter' && (
+        <View style={styles.infoBanner}>
+          <Text style={styles.infoText}>
+            Shelter directory from the City of St. Louis — bed availability is NOT shown here. Call 211 or
+            the provider directly before traveling.
+          </Text>
+        </View>
+      )}
+
       {loading && (
         <View style={styles.state}>
           <ActivityIndicator color={colors.teal} />
@@ -354,7 +426,9 @@ function ResultsSection({
               ? 'No health centers found within 15 miles.'
               : kind === 'water'
                 ? 'No water sources found within 10 miles.'
-                : 'No drop-in centers match the selected day.'}
+                : kind === 'hygiene'
+                  ? 'No drop-in centers match the selected day.'
+                  : 'No shelters match the current filters — call 211.'}
           </Text>
         </View>
       )}
@@ -390,6 +464,19 @@ function ResultsSection({
           </Text>
           {hygieneResults.slice(0, visibleCount).map((r) => (
             <HygieneCard key={r.center.id} result={r} />
+          ))}
+        </>
+      )}
+
+      {!loading && !error && totalCount > 0 && kind === 'shelter' && (
+        <>
+          <Text style={styles.resultsHeader}>
+            {shelterResults.length} shelter provider{shelterResults.length === 1 ? '' : 's'}
+            {audienceFilter !== 'all' ? ` for ${AUDIENCE_LABEL[audienceFilter as ShelterAudience].toLowerCase()}` : ''}
+            {dayFilter === 'any' ? '' : `, open ${DAY_LABEL[dayFilter]} or hours unposted`}.
+          </Text>
+          {shelterResults.slice(0, visibleCount).map((r) => (
+            <ShelterCard key={r.provider.id} result={r} />
           ))}
         </>
       )}
@@ -504,6 +591,97 @@ function WaterCard({ source }: { source: WaterSource }) {
             <Text style={styles.serviceLink}>Website ↗</Text>
           </Pressable>
         )}
+      </View>
+    </View>
+  );
+}
+
+function Shelter211Card() {
+  const call = () => Linking.openURL('tel:211');
+  return (
+    <View style={styles.card211}>
+      <View style={styles.card211Top}>
+        <Text style={styles.card211Eyebrow}>Live availability — call first</Text>
+        <Text style={styles.card211Title}>United Way 211</Text>
+        <Text style={styles.card211Body}>
+          Free, confidential 24/7 phone navigator. 211 knows which beds are open tonight — this
+          directory doesn&apos;t.
+        </Text>
+      </View>
+      <Pressable onPress={call} style={({ pressed }) => [styles.card211Button, pressed && styles.pressed]}>
+        <Text style={styles.card211ButtonText}>☎ Call 211</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function ShelterCard({ result }: { result: ShelterResult }) {
+  const { provider } = result;
+  const phoneDisplay = formatPhone(provider.phone);
+  const altPhoneDisplay = provider.altPhone ? formatPhone(provider.altPhone.number) : null;
+  const call = (num: string) => Linking.openURL(`tel:${num.replace(/\D/g, '')}`);
+  const openSite = () => Linking.openURL(provider.website);
+  const directions = () => {
+    if (provider.latitude === null || provider.longitude === null || !provider.address) return;
+    openMaps(
+      `${provider.name}, ${provider.address}, ${provider.city}, ${provider.state}${provider.zip ? ' ' + provider.zip : ''}`,
+      provider.latitude,
+      provider.longitude
+    );
+  };
+  const openBadge =
+    result.openOnDay === true ? 'Open that day' : result.openOnDay === false ? 'Closed that day' : null;
+  const audienceLabel = AUDIENCE_LABEL[provider.audience];
+
+  return (
+    <View style={styles.serviceCard}>
+      <View style={styles.serviceHeader}>
+        <Text style={styles.serviceName}>{provider.name}</Text>
+        {result.distanceMiles !== null ? (
+          <Text style={styles.distance}>{result.distanceMiles.toFixed(1)} mi</Text>
+        ) : (
+          <Text style={styles.callOnly}>By phone</Text>
+        )}
+      </View>
+      <View style={styles.tags}>
+        <Text style={styles.tag}>{audienceLabel}</Text>
+        {openBadge && (
+          <Text style={[styles.tag, result.openOnDay === false && styles.tagMuted]}>{openBadge}</Text>
+        )}
+      </View>
+      {provider.services.length > 0 && (
+        <Text style={styles.extras}>{provider.services.join(' · ')}</Text>
+      )}
+      <Text style={styles.hoursLine}>🕐 {provider.hours.text}</Text>
+      {provider.address && (
+        <Text style={styles.serviceAddress}>
+          {provider.address}
+          {'\n'}
+          {provider.city}, {provider.state}
+          {provider.zip ? ` ${provider.zip}` : ''}
+        </Text>
+      )}
+      <View style={styles.serviceActions}>
+        {phoneDisplay && (
+          <Pressable onPress={() => call(provider.phone)} hitSlop={6}>
+            <Text style={styles.serviceLink}>☎ {phoneDisplay}</Text>
+          </Pressable>
+        )}
+        {provider.altPhone && altPhoneDisplay && (
+          <Pressable onPress={() => call(provider.altPhone!.number)} hitSlop={6}>
+            <Text style={styles.serviceLink}>
+              {provider.altPhone.label}: {altPhoneDisplay}
+            </Text>
+          </Pressable>
+        )}
+        {provider.latitude !== null && provider.address && (
+          <Pressable onPress={directions} hitSlop={6}>
+            <Text style={styles.serviceLink}>Directions ↗</Text>
+          </Pressable>
+        )}
+        <Pressable onPress={openSite} hitSlop={6}>
+          <Text style={styles.serviceLink}>Website ↗</Text>
+        </Pressable>
       </View>
     </View>
   );
@@ -881,5 +1059,51 @@ const styles = StyleSheet.create({
   tagMuted: {
     backgroundColor: '#f1e4e2',
     color: colors.error,
+  },
+  callOnly: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  card211: {
+    backgroundColor: colors.navy,
+    borderRadius: 15,
+    padding: spacing.four,
+    gap: spacing.two,
+  },
+  card211Top: {
+    gap: 4,
+  },
+  card211Eyebrow: {
+    color: '#b4ece6',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  card211Title: {
+    color: colors.white,
+    fontSize: 20,
+    fontWeight: '800',
+    letterSpacing: -0.4,
+  },
+  card211Body: {
+    color: '#d7eceb',
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  card211Button: {
+    marginTop: spacing.two,
+    backgroundColor: colors.teal,
+    borderRadius: radii.button,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  card211ButtonText: {
+    color: colors.white,
+    fontWeight: '800',
+    fontSize: 15,
   },
 });
