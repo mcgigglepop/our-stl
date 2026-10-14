@@ -33,36 +33,16 @@ resource "aws_cognito_user_pool" "main" {
     }
   }
 
-  schema {
-    attribute_data_type = "String"
-    name                = "name"
-    required            = false
-    mutable             = true
-  }
-
-  schema {
-    attribute_data_type = "String"
-    name                = "family_name"
-    required            = false
-    mutable             = true
-  }
-
-  schema {
-    attribute_data_type = "String"
-    name                = "given_name"
-    required            = false
-    mutable             = true
-  }
-
-  schema {
-    attribute_data_type = "String"
-    name                = "phone_number"
-    required            = false
-    mutable             = true
-  }
-
   deletion_protection = "INACTIVE"
   tags                = var.tags
+
+  # Cognito does not allow schema changes after pool creation. The pool
+  # already has the standard attributes it needs (email as username per
+  # username_attributes, plus the implicit standard set). Let Cognito own
+  # the schema from here forward.
+  lifecycle {
+    ignore_changes = [schema]
+  }
 }
 
 # Cognito User Pool Domain

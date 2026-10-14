@@ -1,16 +1,64 @@
-// OurSTL API — Stage A placeholder.
-// Returns stubbed success responses for all four routes so Terraform can
-// apply + end-to-end plumbing can be verified before real AWS calls go in.
+// OurSTL API — Stage B.
+// Real logic: S3 presign, Rekognition moderation, Bedrock Claude vision for
+// classify+describe, Location Service reverse geocode, DynamoDB persistence.
+//
+// Node 20 Lambda runtime includes @aws-sdk/* v3 modules; no node_modules
+// shipped. Keep this file dep-free beyond those.
+
+import { randomUUID } from 'node:crypto';
+
+import {
+  DeleteObjectCommand,
+  DeleteObjectTaggingCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { RekognitionClient, DetectModerationLabelsCommand } from '@aws-sdk/client-rekognition';
+import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
+import { LocationClient, SearchPlaceIndexForPositionCommand } from '@aws-sdk/client-location';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  PutCommand,
+  QueryCommand,
+} from '@aws-sdk/lib-dynamodb';
+
+// ─── Config ───────────────────────────────────────────────────────────────
+
+const REGION = process.env.AWS_REGION;
+const BUCKET = process.env.REPORTS_BUCKET;
+const TABLE = process.env.REPORTS_TABLE;
+const PLACE_INDEX = process.env.PLACE_INDEX_NAME;
+const BEDROCK_MODEL = process.env.BEDROCK_MODEL_ID;
+
+const CIVIC_CATEGORIES = [
+  'Pothole',
+  'Illegal dumping',
+  'Graffiti',
+  'Streetlight problem',
+  'Damaged sidewalk',
+  'Overgrown tree',
+  'Unsafe building',
+  'Water service issue',
+];
+
+// ─── Clients ──────────────────────────────────────────────────────────────
+
+const s3 = new S3Client({ region: REGION });
+const rekognition = new RekognitionClient({ region: REGION });
+const bedrock = new BedrockRuntimeClient({ region: REGION });
+const location = new LocationClient({ region: REGION });
+const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
+
+// ─── HTTP helpers ─────────────────────────────────────────────────────────
 
 const json = (statusCode, body) => ({
   statusCode,
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify(body),
 });
-
-const notFound = () => json(404, { error: 'route_not_found' });
-const serverError = (err) =>
-  json(500, { error: 'internal_error', message: err?.message ?? String(err) });
 
 function parseBody(event) {
   if (!event.body) return {};
@@ -23,55 +71,257 @@ function parseBody(event) {
 }
 
 function getUserId(event) {
-  // Cognito JWT authorizer puts claims under requestContext.authorizer.jwt.claims
   return event?.requestContext?.authorizer?.jwt?.claims?.sub ?? null;
 }
 
+function badRequest(message) {
+  return json(400, { error: 'bad_request', message });
+}
+
+function serverError(err) {
+  console.error('Internal error', err);
+  return json(500, { error: 'internal_error', message: err?.message ?? String(err) });
+}
+
+// ─── ID generation ────────────────────────────────────────────────────────
+// Padded-timestamp + short UUID → lexicographic sort = time ascending.
+// Query with ScanIndexForward:false to get newest first.
+
+function makeReportId() {
+  const ts = Date.now().toString().padStart(13, '0');
+  const suffix = randomUUID().replace(/-/g, '').slice(0, 8);
+  return `${ts}-${suffix}`;
+}
+
+// ─── POST /uploads/presign ────────────────────────────────────────────────
+
 async function presignHandler(event) {
   const userId = getUserId(event);
-  return json(200, {
-    stage: 'A-placeholder',
-    userId,
-    putUrl: 'https://placeholder.invalid/upload',
-    s3Key: `tmp/${userId}/placeholder.jpg`,
+  if (!userId) return json(401, { error: 'unauthorized' });
+
+  const key = `tmp/${userId}/${randomUUID()}.jpg`;
+  const command = new PutObjectCommand({
+    Bucket: BUCKET,
+    Key: key,
+    ContentType: 'image/jpeg',
+    Tagging: 'tmp=true',
   });
+  const putUrl = await getSignedUrl(s3, command, { expiresIn: 300 });
+
+  return json(200, { putUrl, s3Key: key });
+}
+
+// ─── POST /reports/analyze ────────────────────────────────────────────────
+
+async function fetchS3Bytes(key) {
+  const res = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
+  const chunks = [];
+  for await (const chunk of res.Body) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+async function moderate(key) {
+  const res = await rekognition.send(
+    new DetectModerationLabelsCommand({
+      Image: { S3Object: { Bucket: BUCKET, Name: key } },
+      MinConfidence: 60,
+    })
+  );
+  const labels = res.ModerationLabels ?? [];
+  if (labels.length === 0) return { ok: true };
+  const top = labels[0];
+  return {
+    ok: false,
+    reason: `This photo was flagged as "${top.Name}" (${Math.round(top.Confidence)}% confidence). Please upload a civic-issue photo only.`,
+  };
+}
+
+async function classifyAndDescribe(imageBytes) {
+  const base64 = imageBytes.toString('base64');
+  const prompt = `You are triaging a civic issue report for the City of St. Louis.
+Look at the photo and respond with ONLY a JSON object matching this schema (no prose, no code fences):
+{
+  "category": one of ${JSON.stringify(CIVIC_CATEGORIES)} or null if none fit,
+  "confidence": "high" | "medium" | "low",
+  "description": "1 to 2 sentences, factual, only what is directly observable, no speculation"
+}`;
+
+  const body = {
+    anthropic_version: 'bedrock-2023-05-31',
+    max_tokens: 400,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
+          { type: 'text', text: prompt },
+        ],
+      },
+    ],
+  };
+
+  const res = await bedrock.send(
+    new InvokeModelCommand({
+      modelId: BEDROCK_MODEL,
+      contentType: 'application/json',
+      accept: 'application/json',
+      body: Buffer.from(JSON.stringify(body)),
+    })
+  );
+  const payload = JSON.parse(Buffer.from(res.body).toString('utf8'));
+  const text = payload?.content?.[0]?.text ?? '';
+
+  // Claude sometimes wraps JSON in code fences despite instructions.
+  const stripped = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+  try {
+    const parsed = JSON.parse(stripped);
+    const category = CIVIC_CATEGORIES.includes(parsed.category) ? parsed.category : null;
+    const confidence = ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'low';
+    const description = typeof parsed.description === 'string' ? parsed.description.slice(0, 500) : '';
+    return { category, confidence, description };
+  } catch (err) {
+    console.error('Failed to parse Bedrock response', { text, err });
+    return { category: null, confidence: 'low', description: '' };
+  }
+}
+
+async function reverseGeocode(latitude, longitude) {
+  try {
+    const res = await location.send(
+      new SearchPlaceIndexForPositionCommand({
+        IndexName: PLACE_INDEX,
+        Position: [longitude, latitude],
+        MaxResults: 1,
+      })
+    );
+    const place = res.Results?.[0]?.Place;
+    if (!place) return `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+
+    const parts = [];
+    if (place.AddressNumber) parts.push(place.AddressNumber);
+    if (place.Street) parts.push(place.Street);
+    const street = parts.join(' ');
+    const city = place.Municipality ?? '';
+
+    if (street && city) return `${street}, ${city}`;
+    if (place.Label) return place.Label.replace(/, USA$/, '');
+    return `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+  } catch (err) {
+    console.error('Geocode failed', err);
+    return `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+  }
 }
 
 async function analyzeHandler(event) {
+  const userId = getUserId(event);
+  if (!userId) return json(401, { error: 'unauthorized' });
+
   const body = parseBody(event);
+  const { s3Key, latitude, longitude } = body;
+  if (!s3Key || typeof latitude !== 'number' || typeof longitude !== 'number') {
+    return badRequest('s3Key, latitude, longitude required');
+  }
+  if (!s3Key.startsWith(`tmp/${userId}/`)) {
+    return json(403, { error: 'forbidden', message: 'Key does not belong to the current user.' });
+  }
+
+  // 1. Moderation gate.
+  const mod = await moderate(s3Key);
+  if (!mod.ok) {
+    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: s3Key })).catch(() => {});
+    return json(200, { kind: 'rejected', reason: mod.reason });
+  }
+
+  // 2. Fetch bytes once; Bedrock needs them base64-encoded in the message.
+  const imageBytes = await fetchS3Bytes(s3Key);
+
+  // 3. Classify + describe (Bedrock) and geocode (Location Service) in parallel.
+  const [visionRes, locationLabel] = await Promise.all([
+    classifyAndDescribe(imageBytes),
+    reverseGeocode(latitude, longitude),
+  ]);
+
   return json(200, {
-    stage: 'A-placeholder',
-    received: body,
-    category: 'Pothole',
-    description: 'Stage A placeholder response. Real analysis arrives in Stage B.',
-    locationLabel: 'Downtown St. Louis',
-    confidence: 'low',
+    kind: 'ok',
+    category: visionRes.category,
+    confidence: visionRes.confidence,
+    description: visionRes.description,
+    locationLabel,
   });
 }
+
+// ─── POST /reports ────────────────────────────────────────────────────────
 
 async function createReportHandler(event) {
   const userId = getUserId(event);
+  if (!userId) return json(401, { error: 'unauthorized' });
+
   const body = parseBody(event);
-  return json(200, {
-    stage: 'A-placeholder',
-    report: {
-      reportId: 'placeholder-01',
-      userId,
-      ...body,
-      status: 'submitted',
-      createdAt: new Date().toISOString(),
-    },
-  });
+  const { s3Key, category, description, locationLabel, latitude, longitude } = body;
+  if (!s3Key || !category || typeof latitude !== 'number' || typeof longitude !== 'number') {
+    return badRequest('s3Key, category, latitude, longitude required');
+  }
+  if (!s3Key.startsWith(`tmp/${userId}/`)) {
+    return json(403, { error: 'forbidden', message: 'Key does not belong to the current user.' });
+  }
+  if (!CIVIC_CATEGORIES.includes(category)) {
+    return badRequest(`category must be one of ${CIVIC_CATEGORIES.join(', ')}`);
+  }
+
+  const reportId = makeReportId();
+  const createdAt = new Date().toISOString();
+
+  // Strip the tmp=true tag so the lifecycle rule doesn't reap this photo.
+  await s3.send(new DeleteObjectTaggingCommand({ Bucket: BUCKET, Key: s3Key }));
+
+  const report = {
+    userId,
+    reportId,
+    status: 'submitted',
+    category,
+    description: (description ?? '').slice(0, 1000),
+    locationLabel: locationLabel ?? '',
+    latitude,
+    longitude,
+    s3Key,
+    createdAt,
+  };
+
+  await dynamo.send(new PutCommand({ TableName: TABLE, Item: report }));
+  return json(200, { report });
 }
+
+// ─── GET /reports/mine ────────────────────────────────────────────────────
 
 async function listReportsHandler(event) {
   const userId = getUserId(event);
-  return json(200, {
-    stage: 'A-placeholder',
-    userId,
-    reports: [],
-  });
+  if (!userId) return json(401, { error: 'unauthorized' });
+
+  const res = await dynamo.send(
+    new QueryCommand({
+      TableName: TABLE,
+      KeyConditionExpression: 'userId = :u',
+      ExpressionAttributeValues: { ':u': userId },
+      ScanIndexForward: false, // newest first
+      Limit: 50,
+    })
+  );
+
+  const reports = await Promise.all(
+    (res.Items ?? []).map(async (item) => {
+      const thumbnailUrl = await getSignedUrl(
+        s3,
+        new GetObjectCommand({ Bucket: BUCKET, Key: item.s3Key }),
+        { expiresIn: 3600 }
+      );
+      return { ...item, thumbnailUrl };
+    })
+  );
+
+  return json(200, { reports });
 }
+
+// ─── Router ───────────────────────────────────────────────────────────────
 
 export const handler = async (event) => {
   try {
@@ -83,9 +333,8 @@ export const handler = async (event) => {
     if (route === 'POST /reports/analyze') return analyzeHandler(event);
     if (route === 'POST /reports') return createReportHandler(event);
     if (route === 'GET /reports/mine') return listReportsHandler(event);
-    return notFound();
+    return json(404, { error: 'route_not_found', route });
   } catch (err) {
-    console.error('Unhandled error', err);
     return serverError(err);
   }
 };
