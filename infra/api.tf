@@ -56,6 +56,8 @@ locals {
     "POST /reports",
     "GET /reports/mine",
     "GET /community/reports",
+    "POST /community/posts",
+    "DELETE /community/posts/{postId}",
   ]
 }
 

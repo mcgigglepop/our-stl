@@ -20,6 +20,7 @@ import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedroc
 import { LocationClient, SearchPlaceIndexForPositionCommand } from '@aws-sdk/client-location';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
+  DeleteCommand,
   DynamoDBDocumentClient,
   PutCommand,
   QueryCommand,
@@ -43,6 +44,21 @@ const CIVIC_CATEGORIES = [
   'Unsafe building',
   'Water service issue',
 ];
+
+const COMMUNITY_POST_KINDS = ['issue', 'good', 'event'];
+
+const EARTH_MILES = 3958.8;
+
+function haversineMiles(a, b) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLon = toRad(b.longitude - a.longitude);
+  const lat1 = toRad(a.latitude);
+  const lat2 = toRad(b.latitude);
+  const h =
+    Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * EARTH_MILES * Math.asin(Math.min(1, Math.sqrt(h)));
+}
 
 // ─── Clients ──────────────────────────────────────────────────────────────
 
@@ -316,6 +332,7 @@ async function createReportHandler(event) {
   const report = {
     userId,
     reportId,
+    itemType: 'report',
     status: 'submitted',
     category,
     description: (description ?? '').slice(0, 1000),
@@ -354,7 +371,11 @@ async function listReportsHandler(event) {
     new QueryCommand({
       TableName: TABLE,
       KeyConditionExpression: 'userId = :u',
-      ExpressionAttributeValues: { ':u': userId },
+      // Only civic reports show up in My Requests; community posts live in
+      // the feed. Items created before itemType existed are reports by
+      // definition, so the filter accepts both missing and explicit values.
+      FilterExpression: 'attribute_not_exists(itemType) OR itemType = :r',
+      ExpressionAttributeValues: { ':u': userId, ':r': 'report' },
       ScanIndexForward: false, // newest first
       Limit: 50,
     })
@@ -370,28 +391,132 @@ async function listCommunityReportsHandler(event) {
   const userId = getUserId(event);
   if (!userId) return json(401, { error: 'unauthorized' });
 
+  const qs = event?.queryStringParameters ?? {};
+  const viewerLat = Number(qs.lat);
+  const viewerLng = Number(qs.lng);
+  const hasViewerCoords = Number.isFinite(viewerLat) && Number.isFinite(viewerLng);
+
   const res = await dynamo.send(
     new QueryCommand({
       TableName: TABLE,
       IndexName: 'PublicByCreatedAt',
       KeyConditionExpression: 'publicPartition = :p',
       ExpressionAttributeValues: { ':p': 'PUBLIC' },
-      ScanIndexForward: false, // newest first
-      Limit: 50,
+      ScanIndexForward: false, // newest first (secondary sort by distance below)
+      Limit: 100,
     })
   );
 
-  // Scrub userId from the response — public feed consumers see authorDisplay
-  // but not the raw Cognito sub of other users.
-  const reports = await Promise.all(
+  const enriched = await Promise.all(
     (res.Items ?? []).map(async (item) => {
-      const withThumb = await withThumbnail(item);
-      const { userId: _ownerId, ...rest } = withThumb;
-      return { ...rest, isOwn: _ownerId === userId };
+      const base =
+        item.itemType === 'post' ? item : await withThumbnail(item);
+      const { userId: _ownerId, ...rest } = base;
+      const distanceMiles = hasViewerCoords
+        ? haversineMiles(
+            { latitude: viewerLat, longitude: viewerLng },
+            { latitude: item.latitude, longitude: item.longitude }
+          )
+        : null;
+      return {
+        ...rest,
+        itemType: item.itemType ?? 'report',
+        isOwn: _ownerId === userId,
+        distanceMiles,
+      };
     })
   );
+
+  // Distance-first when the viewer gave us coords; newest-first otherwise.
+  // Ties on distance break by createdAt desc.
+  const reports = hasViewerCoords
+    ? enriched.sort((a, b) => {
+        const da = a.distanceMiles ?? Infinity;
+        const db = b.distanceMiles ?? Infinity;
+        if (da !== db) return da - db;
+        return (b.createdAt ?? '').localeCompare(a.createdAt ?? '');
+      })
+    : enriched;
 
   return json(200, { reports });
+}
+
+// ─── POST /community/posts ────────────────────────────────────────────────
+
+async function createCommunityPostHandler(event) {
+  const userId = getUserId(event);
+  if (!userId) return json(401, { error: 'unauthorized' });
+
+  const body = parseBody(event);
+  const { title, message, kind, latitude, longitude } = body;
+
+  if (!title || typeof title !== 'string' || title.trim().length === 0) {
+    return badRequest('title is required');
+  }
+  if (!message || typeof message !== 'string' || message.trim().length === 0) {
+    return badRequest('message is required');
+  }
+  if (!COMMUNITY_POST_KINDS.includes(kind)) {
+    return badRequest(`kind must be one of ${COMMUNITY_POST_KINDS.join(', ')}`);
+  }
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+    return badRequest('latitude and longitude required');
+  }
+
+  const trimmedTitle = title.trim().slice(0, 120);
+  const trimmedMessage = message.trim().slice(0, 1000);
+  const authorDisplay = getAuthorDisplay(event);
+  const reportId = makeReportId();
+  const createdAt = new Date().toISOString();
+  const locationLabel = await reverseGeocode(latitude, longitude);
+
+  const post = {
+    userId,
+    reportId,
+    itemType: 'post',
+    status: 'posted',
+    kind,
+    title: trimmedTitle,
+    description: trimmedMessage,
+    locationLabel,
+    latitude,
+    longitude,
+    createdAt,
+    isPublic: true,
+    authorDisplay,
+    publicPartition: 'PUBLIC',
+  };
+
+  await dynamo.send(new PutCommand({ TableName: TABLE, Item: post }));
+  return json(200, { post });
+}
+
+// ─── DELETE /community/posts/{postId} ─────────────────────────────────────
+
+async function deleteCommunityPostHandler(event) {
+  const userId = getUserId(event);
+  if (!userId) return json(401, { error: 'unauthorized' });
+
+  const postId = event?.pathParameters?.postId;
+  if (!postId) return badRequest('postId required');
+
+  try {
+    await dynamo.send(
+      new DeleteCommand({
+        TableName: TABLE,
+        Key: { userId, reportId: postId },
+        // Only let posts (not civic reports) be deleted via this endpoint.
+        ConditionExpression: 'attribute_exists(reportId) AND itemType = :p',
+        ExpressionAttributeValues: { ':p': 'post' },
+      })
+    );
+  } catch (err) {
+    if (err?.name === 'ConditionalCheckFailedException') {
+      return json(404, { error: 'not_found', message: 'Post not found or not owned by you.' });
+    }
+    throw err;
+  }
+  return json(200, { ok: true });
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────
@@ -407,6 +532,8 @@ export const handler = async (event) => {
     if (route === 'POST /reports') return createReportHandler(event);
     if (route === 'GET /reports/mine') return listReportsHandler(event);
     if (route === 'GET /community/reports') return listCommunityReportsHandler(event);
+    if (route === 'POST /community/posts') return createCommunityPostHandler(event);
+    if (route === 'DELETE /community/posts/{postId}') return deleteCommunityPostHandler(event);
     return json(404, { error: 'route_not_found', route });
   } catch (err) {
     return serverError(err);

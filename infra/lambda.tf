@@ -88,6 +88,7 @@ data "aws_iam_policy_document" "api" {
       "dynamodb:PutItem",
       "dynamodb:Query",
       "dynamodb:GetItem",
+      "dynamodb:DeleteItem",
     ]
     resources = [
       aws_dynamodb_table.reports.arn,

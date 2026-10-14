@@ -32,9 +32,39 @@ export interface Report {
   authorDisplay?: string;
 }
 
-export interface CommunityReport extends Omit<Report, 'userId'> {
+export type CommunityPostKind = 'issue' | 'good' | 'event';
+
+interface FeedCommon {
+  reportId: string;
+  status: string;
+  description: string;
+  locationLabel: string;
+  latitude: number;
+  longitude: number;
+  createdAt: string;
+  authorDisplay?: string;
   isOwn: boolean;
+  isPublic?: boolean;
+  distanceMiles: number | null;
 }
+
+export interface FeedReportItem extends FeedCommon {
+  itemType: 'report';
+  category: CivicIssue;
+  s3Key: string;
+  thumbnailUrl?: string;
+}
+
+export interface FeedPostItem extends FeedCommon {
+  itemType: 'post';
+  kind: CommunityPostKind;
+  title: string;
+}
+
+export type FeedItem = FeedReportItem | FeedPostItem;
+
+/** @deprecated use FeedItem — kept for backwards-compat on initial release */
+export type CommunityReport = FeedItem;
 
 interface ApiOptions {
   idToken: string;
@@ -145,10 +175,50 @@ export async function listMyReports(opts: ApiOptions): Promise<{ reports: Report
   });
 }
 
-export async function listCommunityReports(opts: ApiOptions): Promise<{ reports: CommunityReport[] }> {
-  return apiFetch<{ reports: CommunityReport[] }>('/community/reports', {
+export async function listCommunityReports(
+  opts: ApiOptions & { coords?: { latitude: number; longitude: number } | null }
+): Promise<{ reports: FeedItem[] }> {
+  const qs = opts.coords
+    ? `?lat=${opts.coords.latitude}&lng=${opts.coords.longitude}`
+    : '';
+  return apiFetch<{ reports: FeedItem[] }>(`/community/reports${qs}`, {
     method: 'GET',
     idToken: opts.idToken,
     signal: opts.signal,
+  });
+}
+
+export async function createCommunityPost(input: {
+  idToken: string;
+  title: string;
+  message: string;
+  kind: CommunityPostKind;
+  latitude: number;
+  longitude: number;
+  signal?: AbortSignal;
+}): Promise<{ post: FeedPostItem }> {
+  return apiFetch<{ post: FeedPostItem }>('/community/posts', {
+    method: 'POST',
+    body: JSON.stringify({
+      title: input.title,
+      message: input.message,
+      kind: input.kind,
+      latitude: input.latitude,
+      longitude: input.longitude,
+    }),
+    idToken: input.idToken,
+    signal: input.signal,
+  });
+}
+
+export async function deleteCommunityPost(input: {
+  idToken: string;
+  postId: string;
+  signal?: AbortSignal;
+}): Promise<{ ok: true }> {
+  return apiFetch<{ ok: true }>(`/community/posts/${encodeURIComponent(input.postId)}`, {
+    method: 'DELETE',
+    idToken: input.idToken,
+    signal: input.signal,
   });
 }
