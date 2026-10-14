@@ -55,6 +55,7 @@ locals {
     "POST /reports/analyze",
     "POST /reports",
     "GET /reports/mine",
+    "GET /community/reports",
   ]
 }
 

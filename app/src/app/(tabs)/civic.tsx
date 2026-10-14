@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 
 import { useAuth } from '@/auth/CognitoContext';
+import { Checkbox } from '@/components/Checkbox';
 import { Dropdown } from '@/components/Dropdown';
 import { Hero } from '@/components/Hero';
 import { MyReportsCard } from '@/components/MyReportsCard';
@@ -62,6 +63,7 @@ export default function CivicReportingScreen() {
   const [reportDescription, setReportDescription] = useState('');
   const [photo, setPhoto] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [s3Key, setS3Key] = useState<string | null>(null);
+  const [shareWithCommunity, setShareWithCommunity] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisHint, setAnalysisHint] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState<string | null>(null);
@@ -103,6 +105,7 @@ export default function CivicReportingScreen() {
     setReportLocation('');
     setReportDescription('');
     setReportCategory('Damaged sidewalk');
+    setShareWithCommunity(false);
   };
 
   const handleHelpDraft = () => {
@@ -204,10 +207,14 @@ export default function CivicReportingScreen() {
         locationLabel: reportLocation,
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
+        isPublic: shareWithCommunity,
       });
+      const sharedBlurb = report.isPublic
+        ? ' It will show up in the Community Feed for other neighbors.'
+        : '';
       Alert.alert(
         'Report filed',
-        `${report.category} at ${report.locationLabel || 'your location'} saved to My requests. OurSTL doesn’t forward reports to the City automatically — use the official CSB portal for an official 311 service request.`
+        `${report.category} at ${report.locationLabel || 'your location'} saved to My requests.${sharedBlurb}\n\nOurSTL doesn’t forward reports to the City automatically — use the official CSB portal for an official 311 service request.`
       );
       resetForm();
       refreshReports();
@@ -425,6 +432,15 @@ export default function CivicReportingScreen() {
         >
           <Text style={styles.secondaryBtnText}>✦ Help me write a description</Text>
         </Pressable>
+
+        <View style={styles.shareRow}>
+          <Checkbox
+            value={shareWithCommunity}
+            onChange={setShareWithCommunity}
+            label="Also share with the community"
+            description="Post this report to the Community Feed so other OurSTL neighbors can see it. Leave off to keep it visible only to you and the city."
+          />
+        </View>
       </View>
 
       {/* ───── What happens next? ───── */}
@@ -810,5 +826,11 @@ const styles = StyleSheet.create({
   },
   primaryBtnDisabled: {
     opacity: 0.5,
+  },
+  shareRow: {
+    marginTop: spacing.three,
+    padding: spacing.three,
+    borderRadius: 10,
+    backgroundColor: '#f0f7f9',
   },
 });

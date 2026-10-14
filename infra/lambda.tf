@@ -89,7 +89,10 @@ data "aws_iam_policy_document" "api" {
       "dynamodb:Query",
       "dynamodb:GetItem",
     ]
-    resources = [aws_dynamodb_table.reports.arn]
+    resources = [
+      aws_dynamodb_table.reports.arn,
+      "${aws_dynamodb_table.reports.arn}/index/*",
+    ]
   }
 }
 

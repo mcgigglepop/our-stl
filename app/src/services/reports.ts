@@ -28,6 +28,12 @@ export interface Report {
   s3Key: string;
   createdAt: string;
   thumbnailUrl?: string;
+  isPublic?: boolean;
+  authorDisplay?: string;
+}
+
+export interface CommunityReport extends Omit<Report, 'userId'> {
+  isOwn: boolean;
 }
 
 interface ApiOptions {
@@ -112,6 +118,7 @@ export async function createReport(input: {
   locationLabel: string;
   latitude: number;
   longitude: number;
+  isPublic: boolean;
   signal?: AbortSignal;
 }): Promise<{ report: Report }> {
   return apiFetch<{ report: Report }>('/reports', {
@@ -123,6 +130,7 @@ export async function createReport(input: {
       locationLabel: input.locationLabel,
       latitude: input.latitude,
       longitude: input.longitude,
+      isPublic: input.isPublic,
     }),
     idToken: input.idToken,
     signal: input.signal,
@@ -131,6 +139,14 @@ export async function createReport(input: {
 
 export async function listMyReports(opts: ApiOptions): Promise<{ reports: Report[] }> {
   return apiFetch<{ reports: Report[] }>('/reports/mine', {
+    method: 'GET',
+    idToken: opts.idToken,
+    signal: opts.signal,
+  });
+}
+
+export async function listCommunityReports(opts: ApiOptions): Promise<{ reports: CommunityReport[] }> {
+  return apiFetch<{ reports: CommunityReport[] }>('/community/reports', {
     method: 'GET',
     idToken: opts.idToken,
     signal: opts.signal,

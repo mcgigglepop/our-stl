@@ -86,6 +86,26 @@ resource "aws_dynamodb_table" "reports" {
     type = "S"
   }
 
+  # Sparse GSI for the community feed: items only appear when they're
+  # marked public (publicPartition attribute set), partition keyed by a
+  # constant so the whole public feed can be queried in createdAt order.
+  attribute {
+    name = "publicPartition"
+    type = "S"
+  }
+
+  attribute {
+    name = "createdAt"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "PublicByCreatedAt"
+    hash_key        = "publicPartition"
+    range_key       = "createdAt"
+    projection_type = "ALL"
+  }
+
   server_side_encryption {
     enabled = true
   }

@@ -74,6 +74,15 @@ function getUserId(event) {
   return event?.requestContext?.authorizer?.jwt?.claims?.sub ?? null;
 }
 
+function getAuthorDisplay(event) {
+  const claims = event?.requestContext?.authorizer?.jwt?.claims ?? {};
+  const name = typeof claims.name === 'string' ? claims.name.trim() : '';
+  if (name) return name;
+  const email = typeof claims.email === 'string' ? claims.email.trim() : '';
+  if (email) return email.split('@')[0];
+  return 'Anonymous';
+}
+
 function badRequest(message) {
   return json(400, { error: 'bad_request', message });
 }
@@ -276,7 +285,7 @@ async function createReportHandler(event) {
   if (!userId) return json(401, { error: 'unauthorized' });
 
   const body = parseBody(event);
-  const { s3Key, category, description, locationLabel, latitude, longitude } = body;
+  const { s3Key, category, description, locationLabel, latitude, longitude, isPublic } = body;
   if (!s3Key || !category || typeof latitude !== 'number' || typeof longitude !== 'number') {
     return badRequest('s3Key, category, latitude, longitude required');
   }
@@ -289,6 +298,8 @@ async function createReportHandler(event) {
 
   const reportId = makeReportId();
   const createdAt = new Date().toISOString();
+  const makePublic = isPublic === true;
+  const authorDisplay = getAuthorDisplay(event);
 
   // Move the object out of tmp/ so the lifecycle rule doesn't reap it.
   // Copy to reports/<userId>/<reportId>.jpg, then delete the tmp original.
@@ -313,6 +324,11 @@ async function createReportHandler(event) {
     longitude,
     s3Key: persistedKey,
     createdAt,
+    isPublic: makePublic,
+    authorDisplay,
+    // Sparse GSI partition key — only set when the report is public, so the
+    // GSI only indexes shared items.
+    ...(makePublic ? { publicPartition: 'PUBLIC' } : {}),
   };
 
   await dynamo.send(new PutCommand({ TableName: TABLE, Item: report }));
@@ -320,6 +336,15 @@ async function createReportHandler(event) {
 }
 
 // ─── GET /reports/mine ────────────────────────────────────────────────────
+
+async function withThumbnail(item) {
+  const thumbnailUrl = await getSignedUrl(
+    s3,
+    new GetObjectCommand({ Bucket: BUCKET, Key: item.s3Key }),
+    { expiresIn: 3600 }
+  );
+  return { ...item, thumbnailUrl };
+}
 
 async function listReportsHandler(event) {
   const userId = getUserId(event);
@@ -335,14 +360,34 @@ async function listReportsHandler(event) {
     })
   );
 
+  const reports = await Promise.all((res.Items ?? []).map(withThumbnail));
+  return json(200, { reports });
+}
+
+// ─── GET /community/reports ───────────────────────────────────────────────
+
+async function listCommunityReportsHandler(event) {
+  const userId = getUserId(event);
+  if (!userId) return json(401, { error: 'unauthorized' });
+
+  const res = await dynamo.send(
+    new QueryCommand({
+      TableName: TABLE,
+      IndexName: 'PublicByCreatedAt',
+      KeyConditionExpression: 'publicPartition = :p',
+      ExpressionAttributeValues: { ':p': 'PUBLIC' },
+      ScanIndexForward: false, // newest first
+      Limit: 50,
+    })
+  );
+
+  // Scrub userId from the response — public feed consumers see authorDisplay
+  // but not the raw Cognito sub of other users.
   const reports = await Promise.all(
     (res.Items ?? []).map(async (item) => {
-      const thumbnailUrl = await getSignedUrl(
-        s3,
-        new GetObjectCommand({ Bucket: BUCKET, Key: item.s3Key }),
-        { expiresIn: 3600 }
-      );
-      return { ...item, thumbnailUrl };
+      const withThumb = await withThumbnail(item);
+      const { userId: _ownerId, ...rest } = withThumb;
+      return { ...rest, isOwn: _ownerId === userId };
     })
   );
 
@@ -361,6 +406,7 @@ export const handler = async (event) => {
     if (route === 'POST /reports/analyze') return analyzeHandler(event);
     if (route === 'POST /reports') return createReportHandler(event);
     if (route === 'GET /reports/mine') return listReportsHandler(event);
+    if (route === 'GET /community/reports') return listCommunityReportsHandler(event);
     return json(404, { error: 'route_not_found', route });
   } catch (err) {
     return serverError(err);

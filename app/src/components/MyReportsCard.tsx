@@ -83,7 +83,10 @@ export function MyReportsCard({ reports, loading, error, onRefresh }: MyReportsC
               )}
               <View style={styles.statusRow}>
                 <Text style={styles.category}>{r.category}</Text>
-                <Text style={styles.statusPill}>{r.status}</Text>
+                <View style={styles.badgeRow}>
+                  {r.isPublic ? <Text style={styles.sharedBadge}>Shared</Text> : null}
+                  <Text style={styles.statusPill}>{r.status}</Text>
+                </View>
               </View>
               <Text style={styles.locationLabel} numberOfLines={1}>
                 📍 {r.locationLabel || 'Location pending'}
@@ -191,6 +194,23 @@ const styles = StyleSheet.create({
     color: '#17334e',
     fontWeight: '800',
     fontSize: 13,
+  },
+  badgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+  },
+  sharedBadge: {
+    backgroundColor: '#dff2ed',
+    color: '#08766f',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+    fontSize: 10,
+    fontWeight: '800',
+    overflow: 'hidden',
   },
   statusPill: {
     backgroundColor: '#e4f5ed',
