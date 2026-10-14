@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -105,25 +106,53 @@ function TypePicker({
   value: RehabFilter;
   onChange: (f: RehabFilter) => void;
 }) {
+  const [open, setOpen] = useState(false);
+
+  const select = (f: RehabFilter) => {
+    onChange(f);
+    setOpen(false);
+  };
+
   return (
     <View>
       <Text style={styles.pickerLabel}>What help do you need?</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillRow}>
-        {FILTERS.map((f) => {
-          const active = value === f;
-          return (
-            <Pressable
-              key={f}
-              onPress={() => onChange(f)}
-              style={({ pressed }) => [styles.pill, active && styles.pillActive, pressed && styles.pressed]}
-            >
-              <Text style={[styles.pillText, active && styles.pillTextActive]}>
-                {REHAB_FILTER_LABEL[f]}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityHint="Opens a list of recovery-support categories"
+        onPress={() => setOpen(true)}
+        style={({ pressed }) => [styles.selectBox, pressed && styles.pressed]}
+      >
+        <Text style={styles.selectValue}>{REHAB_FILTER_LABEL[value]}</Text>
+        <Text style={styles.selectCaret}>▾</Text>
+      </Pressable>
+
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <Pressable style={styles.sheetBackdrop} onPress={() => setOpen(false)}>
+          <Pressable style={styles.sheet} onPress={() => {}}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>What help do you need?</Text>
+            {FILTERS.map((f) => {
+              const active = value === f;
+              return (
+                <Pressable
+                  key={f}
+                  onPress={() => select(f)}
+                  style={({ pressed }) => [
+                    styles.sheetRow,
+                    active && styles.sheetRowActive,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <Text style={[styles.sheetRowText, active && styles.sheetRowTextActive]}>
+                    {REHAB_FILTER_LABEL[f]}
+                  </Text>
+                  {active && <Text style={styles.sheetCheck}>✓</Text>}
+                </Pressable>
+              );
+            })}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -363,25 +392,87 @@ const styles = StyleSheet.create({
   },
 
   pickerLabel: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
-    color: colors.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
+    color: '#3c566b',
     marginBottom: 6,
   },
-  pillRow: { gap: 8, paddingVertical: 2, paddingRight: 2 },
-  pill: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 30,
+  selectBox: {
     borderWidth: 1,
-    borderColor: '#dce6eb',
+    borderColor: '#cedce1',
+    borderRadius: 10,
     backgroundColor: colors.white,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  pillActive: { backgroundColor: '#dff2ed', borderColor: '#dff2ed' },
-  pillText: { color: '#587086', fontSize: 12, fontWeight: '700' },
-  pillTextActive: { color: '#08766f' },
+  selectValue: {
+    color: '#17334e',
+    fontSize: 15,
+    fontWeight: '600',
+    flex: 1,
+  },
+  selectCaret: {
+    color: colors.muted,
+    fontSize: 14,
+    marginLeft: 8,
+  },
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: '#102a3d80',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: spacing.four,
+    paddingTop: spacing.two,
+    paddingBottom: spacing.six,
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    width: 44,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#d8e1e6',
+    marginVertical: spacing.two,
+  },
+  sheetTitle: {
+    ...typography.h3,
+    marginBottom: spacing.two,
+  },
+  sheetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+  },
+  sheetRowActive: {
+    backgroundColor: '#eaf8f5',
+    marginHorizontal: -spacing.four,
+    paddingHorizontal: spacing.four,
+    borderBottomColor: 'transparent',
+    borderRadius: 10,
+  },
+  sheetRowText: {
+    fontSize: 15,
+    color: colors.ink,
+    fontWeight: '600',
+  },
+  sheetRowTextActive: {
+    color: '#0f6a68',
+    fontWeight: '800',
+  },
+  sheetCheck: {
+    color: colors.teal,
+    fontSize: 16,
+    fontWeight: '800',
+  },
 
   state: { padding: spacing.four, alignItems: 'center', gap: spacing.two },
   stateText: { color: colors.muted, fontSize: 13 },
