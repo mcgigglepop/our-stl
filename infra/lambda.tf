@@ -95,6 +95,20 @@ data "aws_iam_policy_document" "api" {
       "${aws_dynamodb_table.reports.arn}/index/*",
     ]
   }
+
+  statement {
+    sid    = "DynamoDBAbusePrevention"
+    effect = "Allow"
+    actions = [
+      "dynamodb:UpdateItem",
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+    ]
+    resources = [
+      aws_dynamodb_table.rate_limits.arn,
+      aws_dynamodb_table.image_hashes.arn,
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "api" {
@@ -119,10 +133,14 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      REPORTS_BUCKET   = aws_s3_bucket.reports.bucket
-      REPORTS_TABLE    = aws_dynamodb_table.reports.name
-      PLACE_INDEX_NAME = aws_location_place_index.main.index_name
-      BEDROCK_MODEL_ID = var.bedrock_model_id
+      REPORTS_BUCKET      = aws_s3_bucket.reports.bucket
+      REPORTS_TABLE       = aws_dynamodb_table.reports.name
+      RATE_LIMITS_TABLE   = aws_dynamodb_table.rate_limits.name
+      IMAGE_HASHES_TABLE  = aws_dynamodb_table.image_hashes.name
+      PLACE_INDEX_NAME    = aws_location_place_index.main.index_name
+      BEDROCK_MODEL_ID    = var.bedrock_model_id
+      RATE_LIMIT_PER_HOUR = "5"
+      RATE_LIMIT_PER_DAY  = "20"
     }
   }
 

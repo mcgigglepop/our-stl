@@ -5,7 +5,7 @@
 // Node 20 Lambda runtime includes @aws-sdk/* v3 modules; no node_modules
 // shipped. Keep this file dep-free beyond those.
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   CopyObjectCommand,
@@ -24,6 +24,7 @@ import {
   DynamoDBDocumentClient,
   PutCommand,
   QueryCommand,
+  UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 
 // ─── Config ───────────────────────────────────────────────────────────────
@@ -31,8 +32,15 @@ import {
 const REGION = process.env.AWS_REGION;
 const BUCKET = process.env.REPORTS_BUCKET;
 const TABLE = process.env.REPORTS_TABLE;
+const RATE_LIMITS_TABLE = process.env.RATE_LIMITS_TABLE;
+const IMAGE_HASHES_TABLE = process.env.IMAGE_HASHES_TABLE;
 const PLACE_INDEX = process.env.PLACE_INDEX_NAME;
 const BEDROCK_MODEL = process.env.BEDROCK_MODEL_ID;
+const RATE_LIMIT_PER_HOUR = Number(process.env.RATE_LIMIT_PER_HOUR ?? 5);
+const RATE_LIMIT_PER_DAY = Number(process.env.RATE_LIMIT_PER_DAY ?? 20);
+const DEDUP_WINDOW_DAYS = 30;
+const LOCATION_COOLDOWN_METERS = 100;
+const LOCATION_COOLDOWN_MINUTES = 20;
 
 const CIVIC_CATEGORIES = [
   'Pothole',
@@ -108,6 +116,122 @@ function serverError(err) {
   return json(500, { error: 'internal_error', message: err?.message ?? String(err) });
 }
 
+// ─── Abuse prevention ─────────────────────────────────────────────────────
+
+function windowKeys(now = new Date()) {
+  const iso = now.toISOString();
+  return {
+    hour: `h#${iso.slice(0, 13)}`, // YYYY-MM-DDTHH
+    day: `d#${iso.slice(0, 10)}`,  // YYYY-MM-DD
+    hourTtl: Math.floor(now.getTime() / 1000) + 2 * 60 * 60,
+    dayTtl: Math.floor(now.getTime() / 1000) + 2 * 24 * 60 * 60,
+  };
+}
+
+async function tryIncrementWindow(userId, windowKey, ttl, limit) {
+  try {
+    await dynamo.send(
+      new UpdateCommand({
+        TableName: RATE_LIMITS_TABLE,
+        Key: { userId, window: windowKey },
+        UpdateExpression: 'SET #c = if_not_exists(#c, :zero) + :one, #t = :ttl',
+        ConditionExpression: 'attribute_not_exists(#c) OR #c < :limit',
+        ExpressionAttributeNames: { '#c': 'count', '#t': 'ttl' },
+        ExpressionAttributeValues: {
+          ':zero': 0,
+          ':one': 1,
+          ':ttl': ttl,
+          ':limit': limit,
+        },
+      })
+    );
+    return { ok: true };
+  } catch (err) {
+    if (err?.name === 'ConditionalCheckFailedException') {
+      return { ok: false };
+    }
+    throw err;
+  }
+}
+
+async function checkRateLimit(userId) {
+  const wk = windowKeys();
+  const hourOk = await tryIncrementWindow(userId, wk.hour, wk.hourTtl, RATE_LIMIT_PER_HOUR);
+  if (!hourOk.ok) {
+    return {
+      ok: false,
+      message: `You've hit the hourly report limit (${RATE_LIMIT_PER_HOUR}/hr). Please try again later.`,
+    };
+  }
+  const dayOk = await tryIncrementWindow(userId, wk.day, wk.dayTtl, RATE_LIMIT_PER_DAY);
+  if (!dayOk.ok) {
+    return {
+      ok: false,
+      message: `You've hit today's report limit (${RATE_LIMIT_PER_DAY}/day). Please try again tomorrow.`,
+    };
+  }
+  return { ok: true };
+}
+
+async function checkImageDedup(imageHash, userId) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ttl = nowSec + DEDUP_WINDOW_DAYS * 24 * 60 * 60;
+  try {
+    await dynamo.send(
+      new PutCommand({
+        TableName: IMAGE_HASHES_TABLE,
+        Item: { hash: imageHash, userId, createdAt: new Date().toISOString(), ttl },
+        ConditionExpression: 'attribute_not_exists(#h)',
+        ExpressionAttributeNames: { '#h': 'hash' },
+      })
+    );
+    return { ok: true };
+  } catch (err) {
+    if (err?.name === 'ConditionalCheckFailedException') {
+      return {
+        ok: false,
+        message: 'This exact photo has already been submitted recently. Try a fresh photo of the issue.',
+      };
+    }
+    throw err;
+  }
+}
+
+async function checkLocationCooldown(userId, latitude, longitude) {
+  const cutoffMs = Date.now() - LOCATION_COOLDOWN_MINUTES * 60 * 1000;
+  const cutoffIso = new Date(cutoffMs).toISOString();
+  const res = await dynamo.send(
+    new QueryCommand({
+      TableName: TABLE,
+      KeyConditionExpression: 'userId = :u',
+      FilterExpression: 'createdAt > :cutoff AND (attribute_not_exists(itemType) OR itemType = :r)',
+      ExpressionAttributeValues: { ':u': userId, ':cutoff': cutoffIso, ':r': 'report' },
+      ScanIndexForward: false,
+      Limit: 20,
+    })
+  );
+  const metersPerMile = 1609.344;
+  const limitMiles = LOCATION_COOLDOWN_METERS / metersPerMile;
+  for (const item of res.Items ?? []) {
+    if (typeof item.latitude !== 'number' || typeof item.longitude !== 'number') continue;
+    const d = haversineMiles(
+      { latitude, longitude },
+      { latitude: item.latitude, longitude: item.longitude }
+    );
+    if (d < limitMiles) {
+      return {
+        ok: false,
+        message: `You already filed a report within ${LOCATION_COOLDOWN_METERS} m of here in the last ${LOCATION_COOLDOWN_MINUTES} minutes. Add detail to that report instead of filing a duplicate.`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+function sha256(buffer) {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
 // ─── ID generation ────────────────────────────────────────────────────────
 // Padded-timestamp + short UUID → lexicographic sort = time ascending.
 // Query with ScanIndexForward:false to get newest first.
@@ -166,8 +290,11 @@ Look at the photo and respond with ONLY a JSON object matching this schema (no p
 {
   "category": one of ${JSON.stringify(CIVIC_CATEGORIES)} or null if none fit,
   "confidence": "high" | "medium" | "low",
-  "description": "1 to 2 sentences, factual, only what is directly observable, no speculation"
-}`;
+  "description": "1 to 2 sentences, factual, only what is directly observable, no speculation",
+  "looksAiGenerated": "yes" | "no" | "uncertain"
+}
+
+For "looksAiGenerated": say "yes" only when you see clear signs the image was synthesized by an AI model (impossible lighting, mangled geometry, nonsensical text on signs, fingers wrong, textures that smear or repeat unnaturally, over-smoothed surfaces). Say "no" for ordinary phone photos. Say "uncertain" when you cannot tell.`;
 
   const body = {
     anthropic_version: 'bedrock-2023-05-31',
@@ -201,10 +328,13 @@ Look at the photo and respond with ONLY a JSON object matching this schema (no p
     const category = CIVIC_CATEGORIES.includes(parsed.category) ? parsed.category : null;
     const confidence = ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'low';
     const description = typeof parsed.description === 'string' ? parsed.description.slice(0, 500) : '';
-    return { category, confidence, description };
+    const looksAiGenerated = ['yes', 'no', 'uncertain'].includes(parsed.looksAiGenerated)
+      ? parsed.looksAiGenerated
+      : 'uncertain';
+    return { category, confidence, description, looksAiGenerated };
   } catch (err) {
     console.error('Failed to parse Bedrock response', { text, err });
-    return { category: null, confidence: 'low', description: '' };
+    return { category: null, confidence: 'low', description: '', looksAiGenerated: 'uncertain' };
   }
 }
 
@@ -285,6 +415,16 @@ async function analyzeHandler(event) {
     reverseGeocode(latitude, longitude),
   ]);
 
+  // 4. Reject obvious AI generations outright.
+  if (visionRes.looksAiGenerated === 'yes') {
+    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: s3Key })).catch(() => {});
+    return json(200, {
+      kind: 'rejected',
+      reason:
+        'This photo appears to be AI-generated. OurSTL only accepts real photos of civic issues.',
+    });
+  }
+
   return json(200, {
     kind: 'ok',
     category: visionRes.category,
@@ -310,6 +450,23 @@ async function createReportHandler(event) {
   }
   if (!CIVIC_CATEGORIES.includes(category)) {
     return badRequest(`category must be one of ${CIVIC_CATEGORIES.join(', ')}`);
+  }
+
+  // 1. Rate limit (cheapest + blocks obvious spam before any S3 work).
+  const rate = await checkRateLimit(userId);
+  if (!rate.ok) return json(429, { error: 'rate_limited', message: rate.message });
+
+  // 2. Location cooldown using the user's own recent reports.
+  const loc = await checkLocationCooldown(userId, latitude, longitude);
+  if (!loc.ok) return json(400, { error: 'location_cooldown', message: loc.message });
+
+  // 3. Fetch the uploaded bytes to hash them for dedup.
+  const imageBytes = await fetchS3Bytes(s3Key);
+  const imageHash = sha256(imageBytes);
+  const dedup = await checkImageDedup(imageHash, userId);
+  if (!dedup.ok) {
+    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: s3Key })).catch(() => {});
+    return json(400, { error: 'duplicate_image', message: dedup.message });
   }
 
   const reportId = makeReportId();
@@ -343,6 +500,7 @@ async function createReportHandler(event) {
     createdAt,
     isPublic: makePublic,
     authorDisplay,
+    imageHash,
     // Sparse GSI partition key — only set when the report is public, so the
     // GSI only indexes shared items.
     ...(makePublic ? { publicPartition: 'PUBLIC' } : {}),

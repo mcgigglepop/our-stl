@@ -70,6 +70,60 @@ resource "aws_s3_bucket_lifecycle_configuration" "reports" {
 # Reports DynamoDB table
 ########################################
 
+########################################
+# Abuse-prevention tables
+########################################
+
+# Per-user rate limits. SK "window" is "h#YYYY-MM-DDTHH" (hourly) or
+# "d#YYYY-MM-DD" (daily); TTL cleans them up automatically.
+resource "aws_dynamodb_table" "rate_limits" {
+  name         = "${var.app_name}-rate-limits"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "userId"
+  range_key    = "window"
+
+  attribute {
+    name = "userId"
+    type = "S"
+  }
+
+  attribute {
+    name = "window"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = var.tags
+}
+
+# Deduplication for image uploads. Hash is a SHA-256 of the raw image bytes.
+# TTL is set 30 days out; after that the same image can be submitted again.
+resource "aws_dynamodb_table" "image_hashes" {
+  name         = "${var.app_name}-image-hashes"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "hash"
+
+  attribute {
+    name = "hash"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = var.tags
+}
+
+########################################
+# Reports table
+########################################
+
 resource "aws_dynamodb_table" "reports" {
   name         = "${var.app_name}-reports"
   billing_mode = "PAY_PER_REQUEST"
